@@ -1,4 +1,4 @@
--- Enable RLS em todas as tabelas com tenant_id
+-- Enable RLS em todas as tabelas do tenant
 DO $$
 DECLARE
   t text;
@@ -14,6 +14,7 @@ BEGIN
       )
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY;', t);
   END LOOP;
 END $$;
 
@@ -40,46 +41,30 @@ BEGIN
     SELECT tablename FROM pg_tables
     WHERE schemaname = 'public'
       AND tablename IN (
-        'Tenant', 'User', 'RefreshToken', 'Trunk', 'Extension', 'InboundRoute',
-        'OutboundRoute', 'Queue', 'QueueMember', 'IvrFlow', 'ErpConnection',
-        'WhatsappConnection', 'SpeechConfig', 'Call', 'CallEvent', 'Recording',
-        'QueueLog', 'AuditLog', 'WhatsappMessage'
+        'User', 'Trunk', 'Extension', 'InboundRoute', 'OutboundRoute', 'Queue',
+        'IvrFlow', 'ErpConnection', 'WhatsappConnection', 'WhatsappMessage',
+        'SpeechConfig', 'Call', 'Recording', 'QueueLog', 'AuditLog'
       )
   LOOP
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I USING (
         COALESCE(current_setting(''app.tenant_id'', true), '''') = ''''
-        OR tenant_id::text = current_setting(''app.tenant_id'', true)
+        OR "tenantId"::text = current_setting(''app.tenant_id'', true)
       );',
       t
     );
   END LOOP;
 END $$;
 
--- Tenant isolada: superadmin pode ver tudo; tenant_admin/supervisor/agent veem apenas seu tenant
-ALTER POLICY tenant_isolation ON "Tenant" USING (
+-- Tenant: superadmin (sem app.tenant_id) ve tudo; outros veem apenas o proprio tenant
+CREATE POLICY tenant_isolation ON "Tenant" USING (
   COALESCE(current_setting('app.tenant_id', true), '') = ''
   OR id::text = current_setting('app.tenant_id', true)
 );
 
--- RefreshToken: o usuario so ve os proprios; nao precisa de tenant_id isolada
-DROP POLICY IF EXISTS tenant_isolation ON "RefreshToken";
+-- RefreshToken: o usuario so ve os proprios tokens (sem tenantId)
 CREATE POLICY tenant_isolation_refresh ON "RefreshToken" USING (
-  user_id::text = current_setting('app.current_user_id', true)
-);
-
--- AuditLog: acessivel ao tenant; superadmin ve tudo (inclusive tenantId null)
-DROP POLICY IF EXISTS tenant_isolation ON "AuditLog";
-CREATE POLICY tenant_isolation_audit ON "AuditLog" USING (
-  COALESCE(current_setting('app.tenant_id', true), '') = ''
-  OR tenant_id::text = current_setting('app.tenant_id', true)
-);
-
--- User: nao pode ver o proprio superadmin (tenantId null) a menos que seja superadmin
-DROP POLICY IF EXISTS tenant_isolation ON "User";
-CREATE POLICY tenant_isolation_user ON "User" USING (
-  COALESCE(current_setting('app.tenant_id', true), '') = ''
-  OR tenant_id::text = current_setting('app.tenant_id', true)
+  "userId"::text = current_setting('app.current_user_id', true)
 );
 
 -- Indices para performance do RLS
