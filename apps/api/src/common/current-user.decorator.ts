@@ -6,8 +6,8 @@ export interface JwtPayload {
   email: string;
   role: string;
   tenantId: string | null;
-  iat: number;
-  exp: number;
+  iat?: number;
+  exp?: number;
 }
 
 export const CurrentUser = createParamDecorator((data: keyof JwtPayload | undefined, ctx: ExecutionContext) => {

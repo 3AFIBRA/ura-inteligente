@@ -69,8 +69,6 @@ export class AuthService {
       email: user.email,
       role: user.role,
       tenantId: user.tenantId,
-      iat: Math.floor(Date.now() / 1000),
-      exp: 0,
     };
     const accessToken = this.jwt.sign(payload);
     const refresh = generateToken();
