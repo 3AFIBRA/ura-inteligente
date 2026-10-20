@@ -1,0 +1,158 @@
+name: ura-inteligente
+
+x-common-env: &common-env
+  env_file: .env
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    <<: *common-env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    <<: *common-env
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  asterisk:
+    build:
+      context: ./infra/asterisk
+    <<: *common-env
+    network_mode: host
+    cap_add:
+      - SYS_NICE
+      - NET_ADMIN
+    volumes:
+      - asterisk-tenants:/etc/asterisk/tenants
+      - asterisk-sounds:/var/lib/asterisk/sounds/custom
+      - asterisk-recordings:/var/spool/asterisk/monitor
+      - asterisk-keys:/etc/asterisk/keys
+      - caddy-data:/caddy-data:ro
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  coturn:
+    image: coturn/coturn:4.6
+    <<: *common-env
+    network_mode: host
+    command: >
+      -n
+      --log-file=stdout
+      --listening-port=3478
+      --tls-listening-port=5349
+      --min-port=${TURN_MIN_PORT}
+      --max-port=${TURN_MAX_PORT}
+      --realm=${TURN_REALM}
+      --user=${TURN_USER}:${TURN_PASSWORD}
+      --external-ip=${PUBLIC_IP}
+      --lt-cred-mech
+      --fingerprint
+      --no-multicast-peers
+      --no-cli
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    <<: *common-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASTERISK_HOST: 127.0.0.1
+      AMI_HOST: 127.0.0.1
+      ARI_URL: http://127.0.0.1:8088/ari
+    extra_hosts:
+      - "asterisk:host-gateway"
+    volumes:
+      - asterisk-tenants:/etc/asterisk/tenants
+      - asterisk-sounds:/var/lib/asterisk/sounds/custom
+      - asterisk-recordings:/var/spool/asterisk/monitor
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: engine
+    <<: *common-env
+    depends_on:
+      api:
+        condition: service_healthy
+    extra_hosts:
+      - "asterisk:host-gateway"
+    volumes:
+      - asterisk-sounds:/var/lib/asterisk/sounds/custom
+      - asterisk-recordings:/var/spool/asterisk/monitor
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    <<: *common-env
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2-alpine
+    <<: *common-env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    extra_hosts:
+      - "asterisk:host-gateway"
+    depends_on:
+      - web
+      - api
+
+volumes:
+  postgres-data:
+  redis-data:
+  asterisk-tenants:
+  asterisk-sounds:
+  asterisk-recordings:
+  asterisk-keys:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,441 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ Multi-tenant ============
+
+model Tenant {
+  id        String   @id @default(uuid())
+  /// identificador curto usado em nomes de endpoint/contexto do Asterisk (ex.: "acme")
+  slug      String   @unique
+  name      String
+  locale    String   @default("pt-BR")
+  timezone  String   @default("America/Sao_Paulo")
+  active    Boolean  @default(true)
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users               User[]
+  trunks              Trunk[]
+  extensions          Extension[]
+  inboundRoutes       InboundRoute[]
+  outboundRoutes      OutboundRoute[]
+  queues              Queue[]
+  flows               IvrFlow[]
+  erpConnections      ErpConnection[]
+  whatsappConnections WhatsappConnection[]
+  speechConfig        SpeechConfig?
+  calls               Call[]
+  recordings          Recording[]
+  queueLogs           QueueLog[]
+  auditLogs           AuditLog[]
+  whatsappMessages    WhatsappMessage[]
+}
+
+model User {
+  id           String    @id @default(uuid())
+  tenantId     String?
+  tenant       Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         String    @default("agent") // superadmin | tenant_admin | supervisor | agent
+  locale       String?
+  active       Boolean   @default(true)
+  /// ramal vinculado (agente)
+  extensionId  String?   @unique
+  extension    Extension? @relation(fields: [extensionId], references: [id])
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@index([tenantId])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  revokedAt DateTime?
+
+  @@index([userId])
+}
+
+// ============ Telefonia ============
+
+model Trunk {
+  id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// nome curto sem espacos (ex.: "vivo")
+  name            String
+  description     String?
+  /// register | ip
+  authMode        String   @default("register")
+  host            String
+  port            Int      @default(5060)
+  transport       String   @default("udp") // udp | tcp | tls
+  username        String?
+  password        String?
+  /// dominio/realm a usar no From (opcional)
+  fromDomain      String?
+  fromUser        String?
+  /// Caller ID padrao de saida
+  outboundCallerId String?
+  codecs          String[] @default(["ulaw", "alaw"])
+  maxChannels     Int      @default(0)
+  /// prefixo a remover/adicionar no numero discado
+  stripDigits     Int      @default(0)
+  prependDigits   String   @default("")
+  /// DIDs atendidos por este tronco (informativo)
+  dids            String[] @default([])
+  /// IPs permitidos (modo ip)
+  allowedIps      String[] @default([])
+  qualify         Boolean  @default(true)
+  active          Boolean  @default(true)
+  lastStatus      String?
+  lastStatusAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  inboundRoutes  InboundRoute[]
+  outboundRoutes OutboundRoute[]
+
+  @@unique([tenantId, name])
+}
+
+model Extension {
+  id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// numero do ramal (ex.: 1001)
+  number          String
+  name            String
+  /// sip | webrtc
+  type            String   @default("sip")
+  secret          String
+  codecs          String[] @default(["ulaw", "alaw", "opus"])
+  callerId        String?
+  /// grava todas as chamadas do ramal
+  record          Boolean  @default(false)
+  voicemail       Boolean  @default(false)
+  voicemailEmail  String?
+  /// rota de saida padrao (opcional)
+  outboundRouteId String?
+  maxContacts     Int      @default(3)
+  active          Boolean  @default(true)
+  lastStatus      String?
+  lastStatusAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user         User?
+  queueMembers QueueMember[]
+
+  @@unique([tenantId, number])
+}
+
+model InboundRoute {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  trunkId     String?
+  trunk       Trunk?   @relation(fields: [trunkId], references: [id], onDelete: SetNull)
+  /// DID/numero discado (padrao Asterisk: _X. aceita qualquer). Vazio = qualquer
+  did         String   @default("_X.")
+  /// ivr | extension | queue
+  destinationType String @default("ivr")
+  flowId      String?
+  flow        IvrFlow? @relation(fields: [flowId], references: [id], onDelete: SetNull)
+  extensionNumber String?
+  queueName   String?
+  record      Boolean  @default(true)
+  priority    Int      @default(100)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model OutboundRoute {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  /// padrao Asterisk (ex.: _0XXXXXXXXXX., _9.)
+  pattern     String
+  trunkId     String
+  trunk       Trunk    @relation(fields: [trunkId], references: [id], onDelete: Cascade)
+  stripDigits Int      @default(0)
+  prependDigits String @default("")
+  callerId    String?
+  priority    Int      @default(100)
+  record      Boolean  @default(false)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model Queue {
+  id                String   @id @default(uuid())
+  tenantId          String
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// nome curto sem espacos (ex.: "financeiro")
+  name              String
+  description       String?
+  strategy          String   @default("rrmemory")
+  timeoutSec        Int      @default(20)
+  retrySec          Int      @default(3)
+  wrapupSec         Int      @default(5)
+  maxLen            Int      @default(0)
+  musicClass        String   @default("default")
+  announcePosition  Boolean  @default(true)
+  announceHoldtime  Boolean  @default(true)
+  announceFrequency Int      @default(60)
+  /// se true, grava chamadas da fila
+  record            Boolean  @default(true)
+  /// SLA alvo em segundos (para relatorios)
+  slaSec            Int      @default(60)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  members QueueMember[]
+
+  @@unique([tenantId, name])
+}
+
+model QueueMember {
+  id          String    @id @default(uuid())
+  queueId     String
+  queue       Queue     @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  extensionId String
+  extension   Extension @relation(fields: [extensionId], references: [id], onDelete: Cascade)
+  penalty     Int       @default(0)
+  paused      Boolean   @default(false)
+
+  @@unique([queueId, extensionId])
+}
+
+// ============ URA ============
+
+model IvrFlow {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  /// definicao em edicao (JSON validado por ivrFlowDefinitionSchema)
+  draft       Json
+  /// definicao publicada (usada pelo engine)
+  published   Json?
+  version     Int      @default(1)
+  publishedAt DateTime?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inboundRoutes InboundRoute[]
+
+  @@index([tenantId])
+}
+
+// ============ Integracoes ============
+
+model ErpConnection {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
+  /// sgp | ispfy | ixcsoft | atlaz | hubsoft | receitanet | sql_generic
+  type       String
+  /// api | database
+  mode       String   @default("api")
+  /// configuracao nao sensivel (baseUrl, dialect, host, port, database, user, mapeamentos de query...)
+  config     Json     @default("{}")
+  /// credenciais criptografadas (AES-256-GCM) em JSON: { password, token, clientSecret, ... }
+  secretsEnc String?
+  isDefault  Boolean  @default(true)
+  active     Boolean  @default(true)
+  lastTestAt DateTime?
+  lastTestOk Boolean?
+  lastTestMsg String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+model WhatsappConnection {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
+  /// meta | evolution | zapi
+  provider   String
+  config     Json     @default("{}")
+  secretsEnc String?
+  isDefault  Boolean  @default(true)
+  active     Boolean  @default(true)
+  lastTestAt DateTime?
+  lastTestOk Boolean?
+  lastTestMsg String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  messages WhatsappMessage[]
+
+  @@index([tenantId])
+}
+
+model WhatsappMessage {
+  id            String   @id @default(uuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  connectionId  String?
+  connection    WhatsappConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  callId        String?
+  to            String
+  body          String?
+  documentName  String?
+  status        String   @default("queued") // queued | sent | delivered | read | failed
+  providerMessageId String?
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId, createdAt])
+}
+
+model SpeechConfig {
+  id          String   @id @default(uuid())
+  tenantId    String   @unique
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  asrProvider String   @default("openai")
+  ttsProvider String   @default("openai")
+  nluProvider String   @default("openai")
+  ttsVoice    String   @default("nova")
+  language    String   @default("pt-BR")
+  config      Json     @default("{}")
+  secretsEnc  String?
+  updatedAt   DateTime @updatedAt
+}
+
+// ============ CDR / Operacao ============
+
+model Call {
+  id               String    @id @default(uuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// uniqueid/channel id do Asterisk
+  channelId        String    @unique
+  linkedId         String?
+  direction        String // inbound | outbound | internal
+  status           String    @default("ringing")
+  callerId         String
+  callerName       String?
+  did              String?
+  destination      String?
+  trunkName        String?
+  queueName        String?
+  agentExtension   String?
+  flowId           String?
+  customerId       String?
+  customerName     String?
+  customerDocument String?
+  intents          String[]  @default([])
+  startedAt        DateTime  @default(now())
+  answeredAt       DateTime?
+  endedAt          DateTime?
+  durationSec      Int?
+  billSec          Int?
+  waitSec          Int?
+  hangupCause      String?
+  hangupBy         String?
+  recordingId      String?   @unique
+  recording        Recording? @relation(fields: [recordingId], references: [id])
+  variables        Json      @default("{}")
+  events           CallEvent[]
+  createdAt        DateTime  @default(now())
+
+  @@index([tenantId, startedAt])
+  @@index([tenantId, status])
+}
+
+model CallEvent {
+  id        String   @id @default(uuid())
+  callId    String
+  call      Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  type      String // node_enter | dtmf | asr | nlu | erp | whatsapp | transfer | queue | hangup | error
+  nodeId    String?
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([callId, createdAt])
+}
+
+model Recording {
+  id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  path        String
+  format      String   @default("wav")
+  durationSec Int?
+  sizeBytes   Int?
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime?
+
+  call Call?
+
+  @@index([tenantId, createdAt])
+}
+
+model QueueLog {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  queueName String
+  callId    String?
+  event     String // ENTERQUEUE | CONNECT | COMPLETECALLER | COMPLETEAGENT | ABANDON | EXITWITHTIMEOUT | ...
+  agent     String?
+  waitSec   Int?
+  talkSec   Int?
+  position  Int?
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, queueName, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String?
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+}

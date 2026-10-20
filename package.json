@@ -1,0 +1,32 @@
+{
+  "name": "ura-inteligente",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plataforma multi-tenant de URA inteligente sobre Asterisk, integrada a ERPs e WhatsApp",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build -w packages/shared -w packages/erp -w packages/whatsapp -w packages/speech && npm run build -w apps/api -w apps/engine -w apps/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "dev:api": "npm run dev -w apps/api",
+    "dev:engine": "npm run dev -w apps/engine",
+    "dev:web": "npm run dev -w apps/web",
+    "prisma:generate": "npm run prisma:generate -w apps/api",
+    "prisma:migrate": "npm run prisma:migrate -w apps/api",
+    "prisma:seed": "npm run prisma:seed -w apps/api"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

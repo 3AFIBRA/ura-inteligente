@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+*.log
+.DS_Store
+apps/web/dist/
+apps/api/prisma/*.db
+infra/asterisk/tenants/*
+!infra/asterisk/tenants/.gitkeep
+.verdent/

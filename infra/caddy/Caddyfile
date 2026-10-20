@@ -1,0 +1,35 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+  encode gzip zstd
+
+  # WebSocket SIP (WebRTC) -> Asterisk (res_http_websocket)
+  @sipws {
+    path /ws
+    header Connection *Upgrade*
+    header Upgrade websocket
+  }
+  reverse_proxy @sipws asterisk:8088
+
+  # API REST + Socket.IO
+  handle /api/* {
+    reverse_proxy api:4000
+  }
+  handle /socket.io/* {
+    reverse_proxy api:4000
+  }
+
+  # Painel web (SPA)
+  handle {
+    reverse_proxy web:80
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options nosniff
+    X-Frame-Options SAMEORIGIN
+    Referrer-Policy strict-origin-when-cross-origin
+  }
+}
