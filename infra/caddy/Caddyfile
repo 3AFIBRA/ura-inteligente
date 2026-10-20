@@ -2,7 +2,9 @@
   email {$ACME_EMAIL}
 }
 
-{$APP_DOMAIN} {
+# NOTA: "http://" explicito porque o dominio atual e um IP de teste (sem TLS/ACME).
+# Ao configurar um dominio real, remova o prefixo http:// para ativar HTTPS automatico.
+http://{$APP_DOMAIN} {
   encode gzip zstd
 
   # WebSocket SIP (WebRTC) -> Asterisk (res_http_websocket)
