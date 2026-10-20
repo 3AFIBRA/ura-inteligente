@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
+import i18n from '../i18n/index.js';
 import { api } from '../lib/api.js';
 import { Button } from '../components/ui/Button.js';
 import { useAuthStore } from '../store/auth.js';
 import type { LoginResponse } from '../types/api.js';
 
+// A tela de login é sempre exibida em português, independente do idioma do navegador do usuário.
+const t = i18n.getFixedT('pt-BR');
+
 export function LoginPage() {
-  const { t } = useTranslation();
   const navigate = useNavigate();
   const setSession = useAuthStore((s) => s.setSession);
   const user = useAuthStore((s) => s.user);
