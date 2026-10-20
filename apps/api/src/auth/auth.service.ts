@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { env } from '../config/env.js';
 import type { JwtPayload } from '../common/current-user.decorator.js';

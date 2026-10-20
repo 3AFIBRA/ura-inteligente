@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../common/decorators.js';
 import { TenantContext } from '../prisma/tenant-context.js';
-import * as bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
 

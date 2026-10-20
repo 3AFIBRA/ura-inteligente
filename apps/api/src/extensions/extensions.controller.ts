@@ -6,7 +6,7 @@ import { Roles } from '../common/decorators.js';
 import { TenantContext } from '../prisma/tenant-context.js';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
-import * as bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import { env } from '../config/env.js';
 import type { Codec } from '@ura/shared';
 

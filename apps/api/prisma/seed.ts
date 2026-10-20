@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import * as bcrypt from 'bcryptjs';
+import bcrypt from 'bcryptjs';
 import { env } from '../src/config/env.js';
 import { DEFAULT_ISP_FLOW } from '@ura/shared';
 
