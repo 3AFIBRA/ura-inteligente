@@ -54,6 +54,9 @@ docker compose exec api npm run prisma:seed
 
 Acesse `https://seu-dominio.com.br`.
 
+> Guia detalhado para instalacao em VPS da Contabo (incluindo escolha da regiao,
+> geracao de chaves e troubleshooting): [docs/instalacao-contabo.md](docs/instalacao-contabo.md)
+
 Usuario padrao:
 - **superadmin**: `admin@exemplo.com.br` / `Admin@123`
 - **demo tenant admin**: `admin@demo.local` / `Demo@123`
