@@ -38,9 +38,8 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-brand-navy px-4 py-10" style={{ backgroundImage: 'radial-gradient(circle at 85% 10%, #343584 0%, transparent 42%), radial-gradient(circle at 5% 95%, #292a72 0%, transparent 40%)' }}>
       <div className="w-full max-w-md rounded-2xl border border-white/15 bg-white p-8 shadow-2xl sm:p-10">
         <div className="mb-8 text-center">
-          <img src="/tudo-voip.png" alt="Tudo VoIP" className="mx-auto mb-4 h-20 w-20 object-contain" />
-          <p className="text-xs font-bold uppercase tracking-[0.25em] text-brand-orange">Tudo VoIP</p>
-          <h1 className="mt-2 text-2xl font-bold text-brand-navy">{t('app.loginTitle')}</h1>
+          <img src="/tudo-voip-horizontal.png" alt="Tudo VoIP · Telefonia em Nuvem" className="mx-auto mb-6 w-full max-w-[280px] object-contain" />
+          <h1 className="text-2xl font-bold text-brand-navy">{t('app.loginTitle')}</h1>
           <p className="mt-2 text-sm text-slate-500">{t('app.loginSubtitle')}</p>
         </div>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">

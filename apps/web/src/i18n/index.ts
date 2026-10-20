@@ -28,13 +28,13 @@ void i18n
   .init({
     resources: {
       'pt-BR': { translation: ptBR },
+      pt: { translation: ptBR },
       en: { translation: en },
       es: { translation: es },
     },
     fallbackLng: 'pt-BR',
-    supportedLngs: [...SUPPORTED_LOCALES],
+    supportedLngs: ['pt-BR', 'pt', ...SUPPORTED_LOCALES.filter((l) => l !== 'pt-BR')],
     nonExplicitSupportedLngs: true,
-    load: 'currentOnly',
     detection: {
       order: ['localStorage', 'navigator'],
       lookupLocalStorage: 'ura.locale',
