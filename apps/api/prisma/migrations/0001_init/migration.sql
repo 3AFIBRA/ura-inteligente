@@ -1,4 +1,3 @@
-npm warn Unknown env config "store-dir". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
 -- CreateTable
 CREATE TABLE "Tenant" (
     "id" TEXT NOT NULL,
