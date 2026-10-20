@@ -4,6 +4,7 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { CurrentUser } from '../common/current-user.decorator.js';
 import type { JwtPayload } from '../common/current-user.decorator.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { Public } from '../common/decorators.js';
 
 @Controller('auth')
 export class AuthController {
@@ -12,11 +13,13 @@ export class AuthController {
     private readonly prisma: PrismaService,
   ) {}
 
+  @Public()
   @Post('login')
   async login(@Body() dto: { email: string; password: string }) {
     return this.auth.login(dto);
   }
 
+  @Public()
   @Post('refresh')
   async refresh(@Body() dto: { refreshToken: string }) {
     return this.auth.refresh(dto);
