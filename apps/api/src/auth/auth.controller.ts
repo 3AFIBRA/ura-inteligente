@@ -1,10 +1,12 @@
-import { Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Patch, Post, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { CurrentUser } from '../common/current-user.decorator.js';
 import type { JwtPayload } from '../common/current-user.decorator.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { Public } from '../common/decorators.js';
+
+const profileSelect = { id: true, email: true, name: true, role: true, locale: true, tenantId: true, tenant: true, extension: { select: { id: true, number: true, name: true, type: true, active: true } }, active: true } as const;
 
 @Controller('auth')
 export class AuthController {
@@ -37,7 +39,7 @@ export class AuthController {
   async me(@CurrentUser() user: JwtPayload) {
     return this.prisma.user.findUnique({
       where: { id: user.sub },
-      include: { tenant: true, extension: true },
+      select: profileSelect,
     });
   }
 
@@ -48,12 +50,13 @@ export class AuthController {
     @Body() dto: { name?: string; locale?: string; password?: string; currentPassword?: string },
   ) {
     if (dto.password) {
-      if (!dto.currentPassword) throw new Error('Informe a senha atual');
+      if (!dto.currentPassword) throw new BadRequestException('Informe a senha atual');
+      if (dto.password.length < 8) throw new BadRequestException('A nova senha precisa de ao menos 8 caracteres');
       await this.auth.changePassword(userId, dto.currentPassword, dto.password);
     }
     const data: Record<string, unknown> = {};
     if (dto.name) data.name = dto.name;
     if (dto.locale) data.locale = dto.locale;
-    return this.prisma.user.update({ where: { id: userId }, data, include: { tenant: true, extension: true } });
+    return this.prisma.user.update({ where: { id: userId }, data, select: profileSelect });
   }
 }

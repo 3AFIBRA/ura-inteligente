@@ -40,7 +40,15 @@ export class InboundRoutesController {
   @Get()
   async list() {
     const tenantId = TenantContext.tenantId();
-    return this.prisma.inboundRoute.findMany({ where: tenantId ? { tenantId } : {}, include: { trunk: true, flow: true }, orderBy: { priority: 'asc' } });
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.inboundRoute.findMany({ where: { tenantId }, orderBy: { priority: 'asc' } });
+  }
+
+  private async checkDestination(tenantId: string, dto: Partial<z.infer<typeof inboundSchema>>) {
+    if (dto.trunkId) await this.prisma.trunk.findFirstOrThrow({ where: { id: dto.trunkId, tenantId } });
+    if (dto.flowId) await this.prisma.ivrFlow.findFirstOrThrow({ where: { id: dto.flowId, tenantId } });
+    if (dto.extensionNumber) await this.prisma.extension.findFirstOrThrow({ where: { number: dto.extensionNumber, tenantId } });
+    if (dto.queueName) await this.prisma.queue.findFirstOrThrow({ where: { name: dto.queueName, tenantId } });
   }
 
   @Post()
@@ -48,19 +56,25 @@ export class InboundRoutesController {
   async create(@Body(new ZodValidationPipe(inboundSchema)) dto: z.infer<typeof inboundSchema>) {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Tenant obrigatorio');
+    await this.checkDestination(tenantId, dto);
     return this.prisma.inboundRoute.create({ data: { ...dto, tenantId } });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof inboundSchema>>) {
-    return this.prisma.inboundRoute.update({ where: { id }, data: dto });
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(inboundSchema.partial())) dto: Partial<z.infer<typeof inboundSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.checkDestination(tenantId, dto);
+    return this.prisma.inboundRoute.update({ where: { id, tenantId }, data: dto });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.inboundRoute.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.inboundRoute.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 }
@@ -73,7 +87,8 @@ export class OutboundRoutesController {
   @Get()
   async list() {
     const tenantId = TenantContext.tenantId();
-    return this.prisma.outboundRoute.findMany({ where: tenantId ? { tenantId } : {}, include: { trunk: true }, orderBy: { priority: 'asc' } });
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.outboundRoute.findMany({ where: { tenantId }, orderBy: { priority: 'asc' } });
   }
 
   @Post()
@@ -81,19 +96,25 @@ export class OutboundRoutesController {
   async create(@Body(new ZodValidationPipe(outboundSchema)) dto: z.infer<typeof outboundSchema>) {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Tenant obrigatorio');
+    await this.prisma.trunk.findFirstOrThrow({ where: { id: dto.trunkId, tenantId } });
     return this.prisma.outboundRoute.create({ data: { ...dto, tenantId } });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof outboundSchema>>) {
-    return this.prisma.outboundRoute.update({ where: { id }, data: dto });
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(outboundSchema.partial())) dto: Partial<z.infer<typeof outboundSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    if (dto.trunkId) await this.prisma.trunk.findFirstOrThrow({ where: { id: dto.trunkId, tenantId } });
+    return this.prisma.outboundRoute.update({ where: { id, tenantId }, data: dto });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.outboundRoute.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.outboundRoute.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 }

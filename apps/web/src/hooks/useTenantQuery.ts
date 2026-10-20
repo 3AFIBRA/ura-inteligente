@@ -29,8 +29,8 @@ export function useTenantQuery<TData = unknown, TError = Error>(
   return useQuery<TData, TError, TData, QueryKey>({
     queryKey: tenantKey,
     queryFn,
-    enabled: (options?.enabled ?? true) && (!needsTenant || !!tenantId),
     ...options,
+    enabled: (options?.enabled ?? true) && (!needsTenant || !!tenantId),
   });
 }
 

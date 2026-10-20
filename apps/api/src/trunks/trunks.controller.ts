@@ -8,6 +8,8 @@ import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
 import type { Codec } from '@ura/shared';
 
+const trunkSelect = { id: true, tenantId: true, name: true, description: true, authMode: true, host: true, port: true, transport: true, username: true, fromDomain: true, fromUser: true, outboundCallerId: true, codecs: true, maxChannels: true, stripDigits: true, prependDigits: true, dids: true, allowedIps: true, qualify: true, active: true, createdAt: true, lastStatus: true } as const;
+
 const trunkSchema = z.object({
   name: z.string().regex(/^[a-z0-9_]{2,20}$/),
   description: z.string().optional(),
@@ -38,9 +40,10 @@ export class TrunksController {
   @Get()
   async list(@Query('search') search?: string) {
     const tenantId = TenantContext.tenantId();
-    const where: Record<string, unknown> = tenantId ? { tenantId } : {};
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const where: Record<string, unknown> = { tenantId };
     if (search) (where as any).name = { contains: search };
-    return this.prisma.trunk.findMany({ where, orderBy: { name: 'asc' } });
+    return this.prisma.trunk.findMany({ where, select: trunkSelect, orderBy: { name: 'asc' } });
   }
 
   @Post()
@@ -48,30 +51,39 @@ export class TrunksController {
   async create(@Body(new ZodValidationPipe(trunkSchema)) dto: z.infer<typeof trunkSchema>) {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Tenant obrigatorio');
-    return this.prisma.trunk.create({ data: { ...dto, tenantId } });
+    return this.prisma.trunk.create({ data: { ...dto, tenantId }, select: trunkSelect });
   }
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    return this.prisma.trunk.findUniqueOrThrow({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.trunk.findFirstOrThrow({ where: { id, tenantId }, select: trunkSelect });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof trunkSchema>>) {
-    return this.prisma.trunk.update({ where: { id }, data: dto });
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(trunkSchema.partial())) dto: Partial<z.infer<typeof trunkSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const { password, ...data } = dto;
+    return this.prisma.trunk.update({ where: { id, tenantId }, data: { ...data, ...(password && { password }) }, select: trunkSelect });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.trunk.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.trunk.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 
   @Get(':id/status')
   async status(@Param('id') id: string) {
-    const trunk = await this.prisma.trunk.findUniqueOrThrow({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const trunk = await this.prisma.trunk.findFirstOrThrow({ where: { id, tenantId }, select: { lastStatus: true, lastStatusAt: true } });
     return { status: trunk.lastStatus ?? 'unknown', detail: trunk.lastStatusAt?.toISOString() };
   }
 }

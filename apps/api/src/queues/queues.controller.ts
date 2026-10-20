@@ -37,7 +37,8 @@ export class QueuesController {
   @Get()
   async list() {
     const tenantId = TenantContext.tenantId();
-    return this.prisma.queue.findMany({ where: tenantId ? { tenantId } : {}, include: { members: { include: { extension: true } } }, orderBy: { name: 'asc' } });
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.queue.findMany({ where: { tenantId }, include: { members: { include: { extension: { select: { id: true, number: true, name: true, type: true } } } } }, orderBy: { name: 'asc' } });
   }
 
   @Post()
@@ -50,38 +51,56 @@ export class QueuesController {
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    return this.prisma.queue.findUniqueOrThrow({ where: { id }, include: { members: { include: { extension: true } } } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, include: { members: { include: { extension: { select: { id: true, number: true, name: true, type: true } } } } } });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof queueSchema>>) {
-    return this.prisma.queue.update({ where: { id }, data: dto });
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(queueSchema.partial())) dto: Partial<z.infer<typeof queueSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.queue.update({ where: { id, tenantId }, data: dto });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.queue.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.queue.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 
   @Post(':id/members')
   @Roles('superadmin', 'tenant_admin')
   async addMember(@Param('id') id: string, @Body(new ZodValidationPipe(memberSchema)) dto: z.infer<typeof memberSchema>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await Promise.all([
+      this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, select: { id: true } }),
+      this.prisma.extension.findFirstOrThrow({ where: { id: dto.extensionId, tenantId }, select: { id: true } }),
+    ]);
     return this.prisma.queueMember.create({ data: { queueId: id, extensionId: dto.extensionId, penalty: dto.penalty } });
   }
 
   @Delete(':id/members/:extensionId')
   @Roles('superadmin', 'tenant_admin')
   async removeMember(@Param('id') id: string, @Param('extensionId') extensionId: string) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, select: { id: true } });
     await this.prisma.queueMember.deleteMany({ where: { queueId: id, extensionId } });
     return { ok: true };
   }
 
   @Post(':id/members/:extensionId/pause')
   @Roles('superadmin', 'tenant_admin', 'supervisor')
-  async pauseMember(@Param('id') id: string, @Param('extensionId') extensionId: string, @Body() dto: { paused: boolean }) {
+  async pauseMember(@Param('id') id: string, @Param('extensionId') extensionId: string, @Body(new ZodValidationPipe(z.object({ paused: z.boolean() }))) dto: { paused: boolean }) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, select: { id: true } });
     await this.prisma.queueMember.updateMany({ where: { queueId: id, extensionId }, data: { paused: dto.paused } });
     return { ok: true };
   }

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, ForbiddenException, NotImplementedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -51,12 +51,13 @@ export class TenantsController {
 
   @Get(':id')
   async get(@Param('id') id: string) {
+    if (TenantContext.get()?.role !== 'superadmin' && TenantContext.tenantId() !== id) throw new ForbiddenException('Acesso negado');
     return this.prisma.tenant.findUniqueOrThrow({ where: { id } });
   }
 
   @Patch(':id')
   @Roles('superadmin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof tenantSchema>>) {
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(tenantSchema.partial())) dto: Partial<z.infer<typeof tenantSchema>>) {
     const data: Record<string, unknown> = {};
     if (dto.name) data.name = dto.name;
     if (dto.locale) data.locale = dto.locale;
@@ -75,6 +76,7 @@ export class TenantsController {
 
   @Get(':id/stats')
   async stats(@Param('id') id: string) {
+    if (TenantContext.get()?.role !== 'superadmin' && TenantContext.tenantId() !== id) throw new ForbiddenException('Acesso negado');
     const [extensions, trunks, queues, callsToday, activeCalls] = await Promise.all([
       this.prisma.extension.count({ where: { tenantId: id } }),
       this.prisma.trunk.count({ where: { tenantId: id } }),
@@ -93,6 +95,8 @@ export class TenantsController {
   @Post(':id/apply')
   @Roles('superadmin', 'tenant_admin')
   async apply(@Param('id') id: string) {
-    return { ok: true, message: 'Asterisk reload sera implementado' };
+    if (TenantContext.get()?.role !== 'superadmin' && TenantContext.tenantId() !== id) throw new ForbiddenException('Acesso negado');
+    await this.prisma.tenant.findUniqueOrThrow({ where: { id }, select: { id: true } });
+    throw new NotImplementedException('Aplicação da configuração no Asterisk ainda não disponível');
   }
 }

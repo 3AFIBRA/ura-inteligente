@@ -7,8 +7,11 @@ import { TenantContext } from '../prisma/tenant-context.js';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
 import bcrypt from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { env } from '../config/env.js';
 import type { Codec } from '@ura/shared';
+
+const extensionSelect = { id: true, tenantId: true, number: true, name: true, type: true, codecs: true, callerId: true, record: true, voicemail: true, voicemailEmail: true, outboundRouteId: true, maxContacts: true, active: true, lastStatus: true, lastStatusAt: true, createdAt: true } as const;
 
 const extensionSchema = z.object({
   number: z.string().min(3).max(10),
@@ -25,7 +28,7 @@ const extensionSchema = z.object({
 });
 
 function generateSecret(): string {
-  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+  return randomBytes(18).toString('base64url');
 }
 
 @Controller('extensions')
@@ -36,14 +39,15 @@ export class ExtensionsController {
   @Get()
   async list(@Query('search') search?: string) {
     const tenantId = TenantContext.tenantId();
-    const where: Record<string, unknown> = tenantId ? { tenantId } : {};
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const where: Record<string, unknown> = { tenantId };
     if (search) {
       (where as any).OR = [
         { number: { contains: search } },
         { name: { contains: search, mode: 'insensitive' } },
       ];
     }
-    return this.prisma.extension.findMany({ where, orderBy: { number: 'asc' } });
+    return this.prisma.extension.findMany({ where, select: extensionSelect, orderBy: { number: 'asc' } });
   }
 
   @Post()
@@ -58,26 +62,34 @@ export class ExtensionsController {
         secret: await bcrypt.hash(secret, 10),
         tenantId,
       },
+      select: extensionSelect,
     });
   }
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    return this.prisma.extension.findUniqueOrThrow({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.extension.findFirstOrThrow({ where: { id, tenantId }, select: extensionSelect });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof extensionSchema>>) {
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(extensionSchema.partial())) dto: Partial<z.infer<typeof extensionSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
     const data: Record<string, unknown> = { ...dto };
     if (dto.secret) data.secret = await bcrypt.hash(dto.secret, 10);
-    return this.prisma.extension.update({ where: { id }, data });
+    else delete data.secret;
+    return this.prisma.extension.update({ where: { id, tenantId }, data, select: extensionSelect });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.extension.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.extension.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 
@@ -85,13 +97,17 @@ export class ExtensionsController {
   @Roles('superadmin', 'tenant_admin')
   async resetSecret(@Param('id') id: string) {
     const secret = generateSecret();
-    await this.prisma.extension.update({ where: { id }, data: { secret: await bcrypt.hash(secret, 10) } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.extension.update({ where: { id, tenantId }, data: { secret: await bcrypt.hash(secret, 10) } });
     return { secret };
   }
 
   @Get(':id/credentials')
   async credentials(@Param('id') id: string) {
-    const ext = await this.prisma.extension.findUniqueOrThrow({ where: { id }, include: { tenant: true } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const ext = await this.prisma.extension.findFirstOrThrow({ where: { id, tenantId }, include: { tenant: true } });
     return {
       username: `t${ext.tenant.slug}-${ext.number}`,
       secret: '********',
@@ -109,7 +125,10 @@ export class ExtensionsController {
 
   @Get('status/all')
   async status() {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
     return this.prisma.extension.findMany({
+      where: { tenantId },
       select: { id: true, number: true, lastStatus: true },
     });
   }

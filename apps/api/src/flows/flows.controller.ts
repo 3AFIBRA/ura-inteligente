@@ -22,8 +22,9 @@ export class FlowsController {
   @Get()
   async list() {
     const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
     const items = await this.prisma.ivrFlow.findMany({
-      where: tenantId ? { tenantId } : {},
+      where: { tenantId },
       orderBy: { name: 'asc' },
       select: {
         id: true, name: true, description: true, version: true, publishedAt: true, active: true, updatedAt: true, createdAt: true,
@@ -52,7 +53,9 @@ export class FlowsController {
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    return this.prisma.ivrFlow.findUniqueOrThrow({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.ivrFlow.findFirstOrThrow({ where: { id, tenantId } });
   }
 
   @Put(':id/draft')
@@ -60,15 +63,19 @@ export class FlowsController {
   async putDraft(@Param('id') id: string, @Body() dto: { draft: Record<string, unknown> }) {
     const parsed = ivrFlowDefinitionSchema.safeParse(dto.draft);
     if (!parsed.success) throw new BadRequestException(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
-    return this.prisma.ivrFlow.update({ where: { id }, data: { draft: parsed.data as any } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.ivrFlow.update({ where: { id, tenantId }, data: { draft: parsed.data as any } });
   }
 
   @Post(':id/publish')
   @Roles('superadmin', 'tenant_admin')
   async publish(@Param('id') id: string) {
-    const flow = await this.prisma.ivrFlow.findUniqueOrThrow({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const flow = await this.prisma.ivrFlow.findFirstOrThrow({ where: { id, tenantId } });
     return this.prisma.ivrFlow.update({
-      where: { id },
+      where: { id, tenantId },
       data: { published: flow.draft as any, publishedAt: new Date(), version: { increment: 1 } },
     });
   }
@@ -88,7 +95,9 @@ export class FlowsController {
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.ivrFlow.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.ivrFlow.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 }

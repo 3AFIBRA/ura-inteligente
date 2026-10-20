@@ -1,7 +1,7 @@
 {
   "app": {
     "name": "URA Inteligente",
-    "loginTitle": "Entrar na URA Inteligente",
+    "loginTitle": "Atendimento Inteligente",
     "loginSubtitle": "Sistema multi-tenant de atendimento por voz integrado a ERPs e WhatsApp.",
     "email": "E-mail",
     "password": "Senha",

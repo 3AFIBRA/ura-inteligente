@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, UseGuards, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
@@ -7,6 +7,8 @@ import { TenantContext } from '../prisma/tenant-context.js';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
+
+const userSelect = { id: true, tenantId: true, email: true, name: true, role: true, locale: true, extensionId: true, active: true, extension: { select: { id: true, number: true, name: true, type: true } } } as const;
 
 const createUserSchema = z.object({
   email: z.string().email(),
@@ -30,7 +32,8 @@ export class UsersController {
     @Query('search') search?: string,
   ) {
     const tenantId = TenantContext.tenantId();
-    const where: Record<string, unknown> = tenantId ? { tenantId } : {};
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const where: Record<string, unknown> = { tenantId };
     if (search) {
       (where as any).OR = [
         { email: { contains: search, mode: 'insensitive' } },
@@ -39,7 +42,7 @@ export class UsersController {
     }
     const skip = (Number(page) - 1) * Number(pageSize);
     const [items, total] = await Promise.all([
-      this.prisma.user.findMany({ where, include: { extension: true }, skip, take: Number(pageSize), orderBy: { name: 'asc' } }),
+      this.prisma.user.findMany({ where, select: userSelect, skip, take: Number(pageSize), orderBy: { name: 'asc' } }),
       this.prisma.user.count({ where }),
     ]);
     return { items, total, page: Number(page), pageSize: Number(pageSize) };
@@ -49,21 +52,32 @@ export class UsersController {
   @Roles('superadmin', 'tenant_admin')
   async create(@Body(new ZodValidationPipe(createUserSchema)) dto: z.infer<typeof createUserSchema>) {
     const tenantId = TenantContext.tenantId();
-    const hash = await bcrypt.hash(dto.password, 10);
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    if (dto.role === 'superadmin') throw new BadRequestException('Superadmin não pode ser criado neste painel');
+    if (dto.extensionId) await this.prisma.extension.findFirstOrThrow({ where: { id: dto.extensionId, tenantId } });
+    const { password, ...data } = dto;
+    const hash = await bcrypt.hash(password, 10);
     return this.prisma.user.create({
-      data: { ...dto, passwordHash: hash, tenantId: tenantId! },
-      include: { extension: true },
+      data: { ...data, passwordHash: hash, tenantId },
+      select: userSelect,
     });
   }
 
   @Get(':id')
   async get(@Param('id') id: string) {
-    return this.prisma.user.findUniqueOrThrow({ where: { id }, include: { extension: true } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    return this.prisma.user.findFirstOrThrow({ where: { id, tenantId }, select: userSelect });
   }
 
   @Patch(':id')
   @Roles('superadmin', 'tenant_admin')
-  async patch(@Param('id') id: string, @Body() dto: Partial<z.infer<typeof createUserSchema>>) {
+  async patch(@Param('id') id: string, @Body(new ZodValidationPipe(createUserSchema.partial())) dto: Partial<z.infer<typeof createUserSchema>>) {
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    const target = await this.prisma.user.findFirstOrThrow({ where: { id, tenantId }, select: { role: true } });
+    if (target.role === 'superadmin' || dto.role === 'superadmin') throw new BadRequestException('Perfil superadmin não pode ser alterado neste painel');
+    if (dto.extensionId) await this.prisma.extension.findFirstOrThrow({ where: { id: dto.extensionId, tenantId } });
     const data: Record<string, unknown> = {};
     if (dto.email) data.email = dto.email;
     if (dto.name) data.name = dto.name;
@@ -72,13 +86,16 @@ export class UsersController {
     if (dto.locale) data.locale = dto.locale;
     if (dto.extensionId !== undefined) data.extensionId = dto.extensionId || null;
     if (dto.active !== undefined) data.active = dto.active;
-    return this.prisma.user.update({ where: { id }, data, include: { extension: true } });
+    return this.prisma.user.update({ where: { id, tenantId }, data, select: userSelect });
   }
 
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) {
-    await this.prisma.user.delete({ where: { id } });
+    const tenantId = TenantContext.tenantId();
+    if (!tenantId) throw new BadRequestException('Selecione uma empresa');
+    await this.prisma.user.findFirstOrThrow({ where: { id, tenantId, role: { not: 'superadmin' } } });
+    await this.prisma.user.delete({ where: { id, tenantId } });
     return { ok: true };
   }
 }

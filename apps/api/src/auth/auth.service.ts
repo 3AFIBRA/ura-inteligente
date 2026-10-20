@@ -2,6 +2,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import bcrypt from 'bcryptjs';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { env } from '../config/env.js';
 import type { JwtPayload } from '../common/current-user.decorator.js';
@@ -30,7 +31,7 @@ export class AuthService {
     private readonly jwt: JwtService,
   ) {}
 
-  async login(dto: LoginDto): Promise<{ accessToken: string; refreshToken: string; user: JwtPayload }> {
+  async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase().trim() }, include: { tenant: true, extension: true } });
     if (!user || !user.active) {
       throw new UnauthorizedException('E-mail ou senha invalidos');
@@ -43,7 +44,7 @@ export class AuthService {
     return this.createSession(user);
   }
 
-  async refresh(dto: RefreshDto): Promise<{ accessToken: string; refreshToken: string; user: JwtPayload }> {
+  async refresh(dto: RefreshDto) {
     const hash = hashToken(dto.refreshToken);
     const rt = await this.prisma.refreshToken.findUnique({ where: { tokenHash: hash }, include: { user: { include: { tenant: true, extension: true } } } });
     if (!rt || rt.revokedAt || rt.expiresAt < new Date()) {
@@ -58,12 +59,7 @@ export class AuthService {
     await this.prisma.refreshToken.updateMany({ where: { tokenHash: hash }, data: { revokedAt: new Date() } });
   }
 
-  private createSession(user: Awaited<ReturnType<typeof this.prisma.user.findUnique>>): {
-    accessToken: string;
-    refreshToken: string;
-    user: JwtPayload;
-  } {
-    if (!user) throw new UnauthorizedException('Usuario invalido');
+  private createSession(user: Prisma.UserGetPayload<{ include: { tenant: true; extension: true } }>) {
     const payload: JwtPayload = {
       sub: user.id,
       email: user.email,
@@ -80,7 +76,11 @@ export class AuthService {
         expiresAt: refreshExpires,
       },
     });
-    return { accessToken, refreshToken: refresh, user: payload };
+    return {
+      accessToken,
+      refreshToken: refresh,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, locale: user.locale, tenantId: user.tenantId, tenant: user.tenant, extension: user.extension && { id: user.extension.id, number: user.extension.number, name: user.extension.name, type: user.extension.type, active: user.extension.active }, active: user.active },
+    };
   }
 
   async changePassword(userId: string, currentPassword: string, newPassword: string) {
