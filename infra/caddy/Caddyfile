@@ -11,7 +11,9 @@
     header Connection *Upgrade*
     header Upgrade websocket
   }
-  reverse_proxy @sipws asterisk:8088
+  handle @sipws {
+    reverse_proxy asterisk:8088
+  }
 
   # API REST + Socket.IO
   handle /api/* {
