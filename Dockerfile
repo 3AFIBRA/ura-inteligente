@@ -11,8 +11,8 @@ COPY apps/engine/package.json apps/engine/
 COPY apps/web/package.json apps/web/
 RUN npm ci
 COPY . .
-RUN npm run build
 RUN npm run prisma:generate
+RUN npm run build
 
 FROM node:20-alpine AS api
 WORKDIR /app
