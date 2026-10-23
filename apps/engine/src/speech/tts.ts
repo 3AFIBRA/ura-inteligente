@@ -16,6 +16,7 @@ export interface TenantSpeech {
   baseUrl?: string;
   apiKey?: string;
   ttsModel?: string;
+  nluModel?: string;
 }
 
 /** Carrega (com cache curto) a config de voz do tenant. */
@@ -33,6 +34,7 @@ export async function getTenantSpeech(tenantId: string): Promise<TenantSpeech> {
     baseUrl: typeof config.openaiBaseUrl === 'string' ? config.openaiBaseUrl : undefined,
     apiKey: secrets.openaiApiKey,
     ttsModel: typeof config.ttsModel === 'string' ? config.ttsModel : undefined,
+    nluModel: typeof config.nluModel === 'string' ? config.nluModel : undefined,
   };
   cache.set(tenantId, { at: Date.now(), value });
   return value;
@@ -180,6 +182,43 @@ export async function transcribe(tenantId: string, filePath: string, language: s
     return data.text?.trim() ?? null;
   } catch (err) {
     logger.warn({ err: String(err) }, 'Falha na transcricao ASR');
+    return null;
+  }
+}
+
+/**
+ * Classifica a fala do cliente em uma das intenções disponíveis (LLM).
+ * Retorna a intenção reconhecida ou null se não houver chave/entrada não encaixar.
+ */
+export async function classifyIntent(tenantId: string, utterance: string, intents: string[]): Promise<string | null> {
+  if (intents.length === 0) return null;
+  const speech = await getTenantSpeech(tenantId);
+  if (!speech.apiKey) return null;
+  try {
+    const base = (speech.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${speech.apiKey}` },
+      body: JSON.stringify({
+        model: speech.nluModel ?? 'gpt-4o-mini',
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: `Você classifica a fala de um cliente em uma URA telefônica brasileira. Intenções possíveis: ${intents.join(', ')}. Responda SOMENTE com JSON no formato {"intent": "<uma das intenções>"} ou {"intent": null} se nenhuma se encaixar.`,
+          },
+          { role: 'user', content: utterance.slice(0, 500) },
+        ],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`NLU HTTP ${res.status}`);
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const parsed = JSON.parse(data.choices?.[0]?.message?.content ?? '{}') as { intent?: unknown };
+    return typeof parsed.intent === 'string' && intents.includes(parsed.intent) ? parsed.intent : null;
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'Falha na classificacao de intencao');
     return null;
   }
 }

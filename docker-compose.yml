@@ -48,7 +48,7 @@ services:
     volumes:
       - asterisk-tenants:/etc/asterisk/tenants
       - asterisk-sounds:/var/lib/asterisk/sounds/custom
-      - asterisk-recordings:/var/spool/asterisk/monitor
+      - asterisk-recordings:/var/spool/asterisk/recording
       - asterisk-keys:/etc/asterisk/keys
       - caddy-data:/caddy-data:ro
     healthcheck:
@@ -96,7 +96,7 @@ services:
     volumes:
       - asterisk-tenants:/etc/asterisk/tenants
       - asterisk-sounds:/var/lib/asterisk/sounds/custom
-      - asterisk-recordings:/var/spool/asterisk/monitor
+      - asterisk-recordings:/var/spool/asterisk/recording
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/api/health"]
       interval: 15s
@@ -118,7 +118,7 @@ services:
       - "asterisk:host-gateway"
     volumes:
       - asterisk-sounds:/var/lib/asterisk/sounds/custom
-      - asterisk-recordings:/var/spool/asterisk/monitor
+      - asterisk-recordings:/var/spool/asterisk/recording
 
   web:
     build:

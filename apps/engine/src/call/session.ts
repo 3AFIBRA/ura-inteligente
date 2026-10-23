@@ -4,7 +4,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import { ivrFlowDefinitionSchema, interpolate, type FlowNode, type IvrFlowDefinition, type Prompt } from '@ura/shared';
 import { env } from '../config/env.js';
 import { logger } from '../logger.js';
-import { ttsToMedia, transcribe } from '../speech/tts.js';
+import { ttsToMedia, transcribe, classifyIntent } from '../speech/tts.js';
 
 const prisma = new PrismaClient();
 
@@ -16,6 +16,31 @@ function resolveVar(vars: Vars, path: string): unknown {
     if (acc && typeof acc === 'object' && key in (acc as Vars)) return (acc as Vars)[key];
     return undefined;
   }, vars);
+}
+
+/** Digitos falados (pt-BR) e palavras de contexto aceitas. */
+const SPOKEN_DIGITS: Record<string, string> = { '0': '0', '1': '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', zero: '0', um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4', cinco: '5', seis: '6', sete: '7', oito: '8', nove: '9' };
+const DIGIT_FILLERS = new Set(['opcao', 'a', 'o', 'e', 'para', 'por', 'favor', 'quero', 'gostaria', 'de', 'do', 'da', 'numero', 'eh', 'digito', 'tecla', 'numero']);
+
+/** Extrai um digito falado ("opção dois") do texto; ignora frases comuns. */
+function spokenDigit(text: string): string | null {
+  const words = text
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  let found: string | null = null;
+  for (const w of words) {
+    const d = SPOKEN_DIGITS[w];
+    if (d !== undefined) {
+      if (found) return null; // mais de um numero => ambiguo
+      found = d;
+      continue;
+    }
+    if (!DIGIT_FILLERS.has(w)) return null; // frase livre, nao eh um digito
+  }
+  return found;
 }
 
 function compare(op: string, a: unknown, b: string): boolean {
@@ -168,40 +193,58 @@ export class CallSession {
     return digits || null;
   }
 
-  /** Grava audio do canal ate silencio ou duracao maxima. Retorna caminho do arquivo. */
-  async record(name: string, maxDurationSec: number, maxSilenceSec: number): Promise<string | null> {
-    try {
-      await this.client.channels.record({
+  /** Grava audio do canal (voz do chamador) ate silencio ou duracao maxima. Resolve com o caminho do arquivo. */
+  record(name: string, maxDurationSec: number, maxSilenceSec: number, beep = true): Promise<string | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value: string | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.client.removeListener('RecordingFinished', onFinished);
+        this.client.removeListener('RecordingFailed', onFailed);
+        resolve(value);
+      };
+      const onFinished = (_evt: unknown, rec: { name?: string }) => {
+        if (rec?.name === name) finish(`${env.RECORDINGS_DIR.replace(/\/$/, '')}/${name}.wav`);
+      };
+      const onFailed = (_evt: unknown, rec: { name?: string }) => {
+        if (rec?.name === name) finish(null);
+      };
+      const timer = setTimeout(() => finish(null), (maxDurationSec + 20) * 1000);
+      this.client.on('RecordingFinished', onFinished);
+      this.client.on('RecordingFailed', onFailed);
+      this.client.channels.record({
         channelId: this.channelId,
         name,
         format: 'wav',
         maxDurationSeconds: maxDurationSec,
         maxSilenceSeconds: maxSilenceSec,
         ifExists: 'overwrite',
-        beep: false,
+        beep,
+      }).catch((err) => {
+        logger.warn({ err: String(err) }, 'Falha ao iniciar gravacao');
+        finish(null);
       });
-      const path = `${env.RECORDINGS_DIR.replace(/\/$/, '')}/${name}.wav`;
-      await new Promise<void>((resolve) => {
-        const onFinished = (_evt: unknown, rec: { name: string }) => {
-          if (rec.name === name) {
-            this.client.removeListener('RecordingFinished', onFinished);
-            clearTimeout(timer);
-            resolve();
-          }
-        };
-        const timer = setTimeout(() => {
-          this.client.removeListener('RecordingFinished', onFinished);
-          resolve();
-        }, (maxDurationSec + 15) * 1000);
-        this.client.on('RecordingFinished', onFinished);
-      });
-      return path;
-    } catch (err) {
-      logger.warn({ err: String(err) }, 'Falha ao gravar audio');
-      return null;
-    }
+    });
+  }
+
+  /** Cancela (descarta) uma gravacao em andamento. */
+  async cancelRecording(name: string): Promise<void> {
+    try {
+      await this.client.recordings.cancel({ recordingName: name });
+    } catch { /* gravacao ja encerrada */ }
+  }
+
+  /** Descarta esperas de DTMF pendentes (usado ao transitar entre nos). */
+  clearDigitWaiters() {
+    for (const w of this.digitWaiters) { clearTimeout(w.timer); w.resolve(null); }
+    this.digitWaiters.length = 0;
   }
 }
+
+/** Entrada reconhecida em um menu: tecla ou fala. */
+type MenuInput = { kind: 'dtmf'; digit: string } | { kind: 'speech'; text: string };
 
 /** Executa o fluxo de URA publicado. */
 export class FlowExecutor {
@@ -232,6 +275,7 @@ export class FlowExecutor {
         logger.warn({ node: current }, 'No inexistente no fluxo; encerrando');
         break;
       }
+      this.session.clearDigitWaiters();
       await this.event('node_enter', node.id);
       current = (await this.execute(node)) ?? undefined;
     }
@@ -260,13 +304,34 @@ export class FlowExecutor {
         return node.next;
 
       case 'menu': {
+        const intentKeys = node.allowSpeech ? Object.keys(node.intents ?? {}) : [];
         let attempts = node.retries + 1;
         while (attempts-- > 0 && !s.closed) {
           await s.playPrompt(node.prompt);
-          const digit = await s.waitForDigit(node.timeoutSec * 1000);
-          await this.event('dtmf', node.id, { digit });
-          if (digit && node.options[digit]) return node.options[digit];
-          if (digit) await s.playPrompt(node.invalidPrompt ?? { text: 'Opção inválida.' });
+          const input = await this.listenForMenuInput(node);
+          if (input?.kind === 'dtmf') {
+            await this.event('dtmf', node.id, { digit: input.digit });
+            if (node.options[input.digit]) return node.options[input.digit];
+            await s.playPrompt(node.invalidPrompt ?? { text: 'Opção inválida.' });
+            continue;
+          }
+          if (input?.kind === 'speech') {
+            await this.event('asr', node.id, { text: input.text });
+            const digit = spokenDigit(input.text);
+            if (digit && node.options[digit]) {
+              await this.event('dtmf', node.id, { digit, via: 'voz' });
+              return node.options[digit];
+            }
+            if (intentKeys.length > 0) {
+              const intent = await classifyIntent(s.tenantId, input.text, intentKeys);
+              await this.event('nlu', node.id, { intent });
+              const intentMap = node.intents as Record<string, string> | undefined;
+              if (intent && intentMap?.[intent]) return intentMap[intent];
+            }
+            await s.playPrompt(node.invalidPrompt ?? { text: 'Não entendi. Vou repetir as opções.' });
+            continue;
+          }
+          // sem entrada (timeout) — repete
         }
         return node.fallback ?? null;
       }
@@ -377,6 +442,47 @@ export class FlowExecutor {
       default:
         return null;
     }
+  }
+
+  /**
+   * Escuta entrada do menu: DTMF e fala livre em paralelo (se allowSpeech).
+   * Resolve com o que chegar primeiro; null se nada for dito/teclado.
+   */
+  private async listenForMenuInput(node: Extract<FlowNode, { type: 'menu' }>): Promise<MenuInput | null> {
+    const s = this.session;
+    if (!node.allowSpeech) {
+      const digit = await s.waitForDigit(node.timeoutSec * 1000);
+      return digit ? { kind: 'dtmf', digit } : null;
+    }
+    const recName = `m-${s.channelId.slice(0, 12)}-${Date.now()}`;
+    const recPromise = s.record(recName, node.timeoutSec, Math.min(2, node.timeoutSec), false);
+    const digitPromise = s.waitForDigit((node.timeoutSec + 2) * 1000);
+    const winner = await Promise.race([
+      digitPromise.then((digit) => ({ kind: 'digit' as const, digit })),
+      recPromise.then((path) => ({ kind: 'rec' as const, path })),
+    ]);
+    if (winner.kind === 'digit') {
+      if (winner.digit) {
+        void s.cancelRecording(recName);
+        return { kind: 'dtmf', digit: winner.digit };
+      }
+      // timeout sem tecla: gravação deve ter encerrado — verifica fala tardia
+      const path = await Promise.race([recPromise, new Promise<null>((r) => setTimeout(() => r(null), 2500))]);
+      if (path) {
+        const text = await transcribe(s.tenantId, path, this.flow.language);
+        if (text) return { kind: 'speech', text };
+      }
+      void s.cancelRecording(recName);
+      return null;
+    }
+    // gravação encerrou primeiro (fala ou silêncio)
+    if (winner.path) {
+      const text = await transcribe(s.tenantId, winner.path, this.flow.language);
+      if (text) return { kind: 'speech', text };
+    }
+    // silêncio: aguarda tecla pelo restante do tempo
+    const digit = await Promise.race([digitPromise, new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
+    return digit ? { kind: 'dtmf', digit } : null;
   }
 
   private validDigits(digits: string, validate: string): boolean {

@@ -10,7 +10,7 @@ export const env = z
     ARI_PASSWORD: z.string().default(''),
     ARI_APP: z.string().default('ura-engine'),
     ASTERISK_SOUNDS_DIR: z.string().default('/var/lib/asterisk/sounds/custom'),
-    RECORDINGS_DIR: z.string().default('/var/spool/asterisk/monitor'),
+    RECORDINGS_DIR: z.string().default('/var/spool/asterisk/recording'),
     SECRETS_ENCRYPTION_KEY: z.string().min(64),
     DEFAULT_LOCALE: z.string().default('pt-BR'),
   })
