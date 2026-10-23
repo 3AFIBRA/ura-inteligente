@@ -5,7 +5,7 @@ clearglobalvars = no
 
 [globals]
 ARI_APP = ${ARI_APP}
-RECDIR = /var/spool/asterisk/monitor
+RECDIR = /var/spool/asterisk/recording
 
 ; Entrada de troncos sem contexto especifico cai aqui (seguranca)
 [from-unknown]
@@ -22,6 +22,7 @@ exten => s,1,NoOp(URA tenant=${ARG1} did=${ARG2} from=${CALLERID(num)})
  same => n,Set(CHANNEL(hangup_handler_push)=sub-hangup,s,1)
  same => n,Set(__URA_TENANT=${ARG1})
  same => n,Set(__URA_DID=${ARG2})
+ same => n,MixMonitor(${RECDIR}/call-${UNIQUEID}.wav)
  same => n,Stasis(${ARI_APP},inbound,${ARG1},${ARG2})
  same => n,Hangup()
 

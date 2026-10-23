@@ -29,10 +29,12 @@ export class JwtAuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const auth = req.headers.authorization;
-    if (!auth?.startsWith('Bearer ')) {
+    // Fallback: token via query string (usado por <audio src> de gravacoes)
+    const queryToken = typeof req.query?.token === 'string' ? req.query.token : null;
+    const token = auth?.startsWith('Bearer ') ? auth.slice(7) : queryToken;
+    if (!token) {
       throw new UnauthorizedException('Token nao fornecido');
     }
-    const token = auth.slice(7);
     try {
       const payload = this.jwt.verify<JwtPayload>(token, { secret: env.jwtSecret });
       req.user = payload;

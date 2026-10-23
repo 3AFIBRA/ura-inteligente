@@ -16,6 +16,7 @@ import { QueuesController } from './queues/queues.controller.js';
 import { FlowsController } from './flows/flows.controller.js';
 import { ErpConnectionsController, WhatsappConnectionsController, SpeechConfigController } from './integrations/integrations.controller.js';
 import { CallsController, ReportsController } from './calls/calls.controller.js';
+import { RecordingsController } from './recordings/recordings.controller.js';
 import { HealthController, AsteriskController } from './health/health.controller.js';
 
 @Module({
@@ -39,6 +40,7 @@ import { HealthController, AsteriskController } from './health/health.controller
     SpeechConfigController,
     CallsController,
     ReportsController,
+    RecordingsController,
     HealthController,
     AsteriskController,
   ],

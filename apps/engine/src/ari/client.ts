@@ -37,6 +37,18 @@ async function handleInbound(client: AriClient, channel: Channel, tenantId: stri
     update: { status: 'answered', answeredAt: new Date(), did, flowId: loaded.flowId },
   });
 
+  // Gravacao da chamada completa (MixMonitor iniciado no dialplan sub-ura)
+  if (!call.recordingId) {
+    try {
+      const recording = await prisma.recording.create({
+        data: { tenantId, path: `${env.RECORDINGS_DIR.replace(/\/$/, '')}/call-${channel.id}.wav`, format: 'wav' },
+      });
+      await prisma.call.update({ where: { id: call.id }, data: { recordingId: recording.id } });
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'Falha ao registrar gravacao da chamada');
+    }
+  }
+
   const session = new CallSession(client, channel, tenantId, tenant.name, tenant.slug, did);
   session.vars = {
     ...((call.variables ?? {}) as Record<string, unknown>),

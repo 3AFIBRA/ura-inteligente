@@ -5,7 +5,7 @@ import { Card, StatCard } from '../components/ui/Card.js';
 import { Button } from '../components/ui/Button.js';
 import { PageHeader } from '../components/ui/PageHeader.js';
 import { Table } from '../components/ui/Table.js';
-import { get, patch, buildQuery, getErrorMessage } from '../lib/api.js';
+import { get, patch, buildQuery, getErrorMessage, api, recordingStreamUrl } from '../lib/api.js';
 import { useTenantQuery, useEffectiveTenantId } from '../hooks/useTenantQuery.js';
 import { useAuthStore } from '../store/auth.js';
 import { toast } from '../store/toast.js';
@@ -16,6 +16,22 @@ const formatDuration = (seconds?: number | null) => seconds == null ? '—' : `$
 const statuses: Record<string, string> = { ringing: 'Tocando', in_ivr: 'Na URA', in_queue: 'Na fila', talking: 'Em conversa', completed: 'Concluída', abandoned: 'Abandonada', failed: 'Falhou' };
 const statusLabel = (status: string) => statuses[status] ?? status;
 const directions: Record<string, string> = { inbound: 'Entrada', outbound: 'Saída', internal: 'Interna' };
+
+/** Baixa a gravacao da chamada em MP3. */
+async function downloadRecordingMp3(call: CallDetail) {
+  if (!call.recordingId) return;
+  try {
+    const res = await api.get(`/recordings/${call.recordingId}/download.mp3`, { responseType: 'blob', timeout: 120000 });
+    const url = URL.createObjectURL(res.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `chamada-${call.callerId || call.id.slice(0, 8)}-${new Date(call.startedAt).toISOString().slice(0, 10)}.mp3`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    toast.error('Não foi possível baixar a gravação', getErrorMessage(error));
+  }
+}
 
 function TenantRequired({ children }: { children: React.ReactNode }) {
   const tenantId = useEffectiveTenantId();
@@ -53,12 +69,16 @@ export function CallsPage() {
       { key: 'direction', header: 'Direção', render: (call) => directions[call.direction] ?? call.direction },
       { key: 'status', header: 'Status', render: (call) => statusLabel(call.status) },
       { key: 'duration', header: 'Duração', render: (call) => formatDuration(call.durationSec) },
+      { key: 'recording', header: 'Gravação', render: (call) => call.recordingId
+        ? <Button variant="outline" onClick={(event) => { event.stopPropagation(); void downloadRecordingMp3(call); }} title="Baixar gravação em MP3"><Download size={14} /> MP3</Button>
+        : <span className="text-slate-400">—</span> },
     ]} /></Card>
     {(list.data?.total ?? 0) > 0 && <div className="flex items-center justify-end gap-3 text-sm text-slate-600"><span>Página {page} de {Math.ceil((list.data?.total ?? 0) / 20)} · {list.data?.total} chamadas</span><Button variant="outline" disabled={page === 1} onClick={() => setPage(page - 1)}>Anterior</Button><Button variant="outline" disabled={page * 20 >= (list.data?.total ?? 0)} onClick={() => setPage(page + 1)}>Próxima</Button></div>}
     {selectedId && <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand-navy/60 p-4" onClick={() => setSelectedId(null)}><div role="dialog" aria-label="Detalhes da chamada" className="max-h-[85vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl" onClick={(event) => event.stopPropagation()}>
       <div className="mb-5 flex items-center justify-between"><h3 className="text-lg font-bold text-brand-navy">Detalhes da chamada</h3><Button variant="outline" onClick={() => setSelectedId(null)}>Fechar</Button></div>
       <ErrorNotice error={detail.error} />{detail.isLoading ? <p>Carregando...</p> : detail.data && <div className="space-y-4 text-sm">
         <div className="grid grid-cols-2 gap-3">{([['Início', formatDate(detail.data.startedAt)], ['Origem', detail.data.callerId], ['Destino', detail.data.destination || detail.data.did || '—'], ['Status', statusLabel(detail.data.status)], ['Fila', detail.data.queueName || '—'], ['Atendente', detail.data.agentExtension || '—'], ['Duração', formatDuration(detail.data.durationSec)], ['Cliente', detail.data.customerName || '—']] as const).map(([label, value]) => <div key={label}><span className="block text-xs text-slate-500">{label}</span><strong className="text-brand-navy">{value}</strong></div>)}</div>
+        {detail.data.recordingId && <div className="rounded-lg border border-slate-200 p-3"><h4 className="mb-2 font-semibold">Gravação</h4><div className="flex flex-wrap items-center gap-3"><audio controls preload="none" src={recordingStreamUrl(detail.data.recordingId)} className="h-9 min-w-0 flex-1" /><Button variant="outline" onClick={() => void downloadRecordingMp3(detail.data)}><Download size={14} /> Baixar MP3</Button></div></div>}
         {detail.data.events.length > 0 && <div><h4 className="mb-2 font-semibold">Eventos</h4><ol className="space-y-2 border-l-2 border-accent-200 pl-3">{detail.data.events.map((event) => <li key={event.id}>{formatDate(event.createdAt)} · {event.type}</li>)}</ol></div>}
       </div>}
     </div></div>}
