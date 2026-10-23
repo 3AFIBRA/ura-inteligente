@@ -1,16 +1,27 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Tenant, Trunk } from '@prisma/client';
+import { randomBytes } from 'node:crypto';
+import type { Tenant, Trunk, Extension } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AmiService } from './ami.service.js';
 import { env } from '../config/env.js';
+import { encryptSecrets, decryptSecrets } from '@ura/shared/crypto';
 
 export type TrunkStatus = {
   id: string;
   name: string;
   status: 'registered' | 'unregistered' | 'rejected' | 'unreachable' | 'inactive' | 'unknown';
   registered: boolean;
+  detail: string;
+};
+
+export type ExtensionStatus = {
+  id: string;
+  number: string;
+  name: string;
+  online: boolean;
+  status: 'online' | 'offline' | 'inactive' | 'unknown';
   detail: string;
 };
 
@@ -21,6 +32,26 @@ function slugify(value: string): string {
 /** Nome do endpoint PJSIP de um tronco (usado no Asterisk). */
 export function trunkEndpointName(tenantSlug: string, trunk: Pick<Trunk, 'name'>): string {
   return `t${slugify(tenantSlug)}-${trunk.name}`;
+}
+
+/** Nome do endpoint PJSIP de um ramal (usado no Asterisk e no softphone). */
+export function extensionEndpointName(tenantSlug: string, extension: Pick<Extension, 'number'>): string {
+  return `t${slugify(tenantSlug)}-${extension.number}`;
+}
+
+/** Criptografa a senha do ramal para armazenamento (formato enc:...). */
+export function encryptExtensionSecret(secret: string): string {
+  return 'enc:' + encryptSecrets({ secret }, env.secretsEncryptionKey);
+}
+
+/** Recupera a senha do ramal; null para formatos antigos/inválidos. */
+export function decryptExtensionSecret(stored: string): string | null {
+  if (!stored.startsWith('enc:')) return null;
+  try {
+    return decryptSecrets<{ secret?: string }>(stored.slice(4), env.secretsEncryptionKey).secret ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function esc(value: string): string {
@@ -44,7 +75,7 @@ export class AsteriskConfigService implements OnModuleInit {
 
   // ============ Geração de configuração ============
 
-  private renderPjsip(tenant: Tenant, trunks: Trunk[]): string {
+  private renderPjsip(tenant: Tenant, trunks: Trunk[], extensions: Extension[]): string {
     const slug = slugify(tenant.slug);
     const blocks: string[] = [
       `; Gerado automaticamente pela API — não edite manualmente.`,
@@ -118,10 +149,48 @@ export class AsteriskConfigService implements OnModuleInit {
       );
     }
     if (active.length === 0) blocks.push(``, `; Nenhum tronco ativo neste tenant.`);
+
+    // ============ Ramais ============
+    for (const ext of extensions.filter((e) => e.active)) {
+      const ep = extensionEndpointName(slug, ext);
+      const secret = decryptExtensionSecret(ext.secret);
+      const isWebrtc = ext.type === 'webrtc';
+      blocks.push(
+        ``,
+        `;; Ramal: ${ext.number} — ${ext.name} (${isWebrtc ? 'WebRTC' : 'SIP'})`,
+        ``,
+        `[${ep}](${isWebrtc ? 'tpl-webrtc-endpoint' : 'tpl-sip-endpoint'})`,
+        `transport = ${isWebrtc ? 'transport-wss' : 'transport-udp'}`,
+        `context = to-${slug}`,
+        `disallow = all`,
+        `allow = ${(ext.codecs.length ? ext.codecs : ['ulaw', 'alaw', 'opus']).join(',')}`,
+        `callerid = ${esc(ext.callerId || `"${ext.name}" <${ext.number}>`)}`,
+        `aors = ${ep}`,
+      );
+      if (secret) {
+        blocks.push(
+          `auth = ${ep}-auth`,
+          ``,
+          `[${ep}-auth](tpl-auth)`,
+          `username = ${ep}`,
+          `password = ${esc(secret)}`,
+        );
+      } else {
+        blocks.push(`; ATENCAO: senha em formato antigo — redefina a senha no painel para habilitar o registro`);
+      }
+      blocks.push(
+        ``,
+        `[${ep}](tpl-aor)`,
+        `max_contacts = ${ext.maxContacts || 3}`,
+        `remove_existing = yes`,
+        `qualify_frequency = 60`,
+      );
+    }
+    if (extensions.length === 0) blocks.push(``, `; Nenhum ramal neste tenant.`);
     return blocks.join('\n') + '\n';
   }
 
-  private renderDialplan(tenant: Tenant, trunks: Trunk[]): string {
+  private renderDialplan(tenant: Tenant, trunks: Trunk[], extensions: Extension[]): string {
     const slug = slugify(tenant.slug);
     const firstTrunk = trunks.find((t) => t.active);
     const lines: string[] = [
@@ -142,10 +211,21 @@ export class AsteriskConfigService implements OnModuleInit {
       ` same => n,Gosub(sub-ura,s,1(${tenant.id},\${URADID}))`,
       ` same => n,Hangup()`,
       ``,
-      `; Saída pelo primeiro tronco ativo`,
+      `; Contexto de saida: ramais discando e transferencia da URA`,
       `[to-${slug}]`,
-      `exten => _[0-9*#+].,1,NoOp(Saida tenant=${tenant.id} para \${EXTEN})`,
+      `; Chamadas entre ramais e da URA para ramal (extensao literal tem precedencia sobre o padrao)`,
     ];
+    for (const ext of extensions.filter((e) => e.active)) {
+      lines.push(
+        `exten => ${esc(ext.number)},1,NoOp(Ramal ${esc(ext.number)})`,
+        ` same => n,Dial(PJSIP/${extensionEndpointName(slug, ext)},30,tTkK)`,
+        ` same => n,Hangup()`,
+      );
+    }
+    lines.push(
+      `; Saída pelo primeiro tronco ativo`,
+      `exten => _[0-9*#+].,1,NoOp(Saida tenant=${tenant.id} para \${EXTEN})`,
+    );
     if (firstTrunk) {
       const ep = trunkEndpointName(slug, firstTrunk);
       lines.push(` same => n,Dial(PJSIP/\${EXTEN}@${ep},60)`);
@@ -174,13 +254,15 @@ export class AsteriskConfigService implements OnModuleInit {
   async applyTenant(tenantId: string, opts: { reload?: boolean } = {}): Promise<void> {
     const tenant = await this.prisma.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     const trunks = await this.prisma.trunk.findMany({ where: { tenantId } });
+    const extensions = await this.prisma.extension.findMany({ where: { tenantId } });
+    await this.normalizeExtensionSecrets(extensions);
     const dir = env.asteriskConfigDir;
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, `pjsip-${tenantId}.conf`), this.renderPjsip(tenant, trunks));
-    await writeFile(join(dir, `extensions-${tenantId}.conf`), this.renderDialplan(tenant, trunks));
+    await writeFile(join(dir, `pjsip-${tenantId}.conf`), this.renderPjsip(tenant, trunks, extensions));
+    await writeFile(join(dir, `extensions-${tenantId}.conf`), this.renderDialplan(tenant, trunks, extensions));
     await this.refreshAggregates();
     if (opts.reload !== false) await this.reload();
-    this.logger.log(`Configuração do tenant ${tenant.slug} aplicada (${trunks.length} tronco(s))`);
+    this.logger.log(`Configuração do tenant ${tenant.slug} aplicada (${trunks.length} tronco(s), ${extensions.length} ramal(is))`);
   }
 
   async applyAll(): Promise<void> {
@@ -249,6 +331,70 @@ export class AsteriskConfigService implements OnModuleInit {
         .filter((r) => r.status !== 'unknown')
         .map((r) =>
           this.prisma.trunk.update({
+            where: { id: r.id },
+            data: { lastStatus: r.status, lastStatusAt: new Date() },
+          }),
+        ),
+    ).catch(() => undefined);
+
+    return result;
+  }
+
+  // ============ Status dos ramais ============
+
+  /** Ramais com senha em formato antigo (hash) ganham uma nova senha criptografada. */
+  private async normalizeExtensionSecrets(extensions: Extension[]): Promise<void> {
+    for (const ext of extensions) {
+      if (ext.secret && !ext.secret.startsWith('enc:')) {
+        const novo = randomBytes(18).toString('base64url');
+        const stored = encryptExtensionSecret(novo);
+        await this.prisma.extension.update({ where: { id: ext.id }, data: { secret: stored } }).catch(() => undefined);
+        ext.secret = stored;
+        this.logger.warn(`Ramal ${ext.number}: senha redefinida (formato antigo detectado). Edite o ramal no painel para definir uma senha conhecida.`);
+      }
+    }
+  }
+
+  /** Status de registro dos ramais do tenant (luz verde/vermelha no painel). */
+  async extensionsStatus(tenant: Tenant, extensions: Extension[]): Promise<ExtensionStatus[]> {
+    const slug = slugify(tenant.slug);
+    let contacts = new Map<string, string[]>();
+    let amiError = '';
+    try {
+      contacts = await this.ami.contactStatusesByAor();
+    } catch (err) {
+      amiError = String(err);
+    }
+
+    const result: ExtensionStatus[] = [];
+    for (const ext of extensions) {
+      if (!ext.active) {
+        result.push({ id: ext.id, number: ext.number, name: ext.name, online: false, status: 'inactive', detail: 'Ramal inativo' });
+        continue;
+      }
+      if (amiError) {
+        result.push({ id: ext.id, number: ext.number, name: ext.name, online: false, status: 'unknown', detail: 'AMI indisponível' });
+        continue;
+      }
+      const aor = extensionEndpointName(slug, ext);
+      const statuses = contacts.get(aor) ?? [];
+      const online = statuses.some((s) => s.toLowerCase() === 'avail');
+      result.push({
+        id: ext.id,
+        number: ext.number,
+        name: ext.name,
+        online,
+        status: online ? 'online' : 'offline',
+        detail: online ? statuses.join(', ') : 'Não registrado',
+      });
+    }
+
+    // Persiste o último status conhecido
+    await this.prisma.$transaction(
+      result
+        .filter((r) => r.status !== 'unknown')
+        .map((r) =>
+          this.prisma.extension.update({
             where: { id: r.id },
             data: { lastStatus: r.status, lastStatusAt: new Date() },
           }),

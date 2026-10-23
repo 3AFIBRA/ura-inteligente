@@ -122,4 +122,20 @@ export class AmiService implements OnModuleDestroy {
     }
     return statuses;
   }
+
+  /** Status de todos os contatos registrados (ramais). Mapa aor -> status dos contatos. */
+  async contactStatusesByAor(): Promise<Map<string, string[]>> {
+    const events = await this.actionWithEvents({ Action: 'PJSIPShowContacts' });
+    const map = new Map<string, string[]>();
+    for (const evt of events) {
+      if (evtStr(evt, 'event') !== 'ContactStatusDetail') continue;
+      const aor = evtStr(evt, 'aor');
+      const status = evtStr(evt, 'status');
+      if (!aor || !status) continue;
+      const list = map.get(aor) ?? [];
+      list.push(status);
+      map.set(aor, list);
+    }
+    return map;
+  }
 }
