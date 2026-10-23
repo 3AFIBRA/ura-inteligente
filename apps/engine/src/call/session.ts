@@ -408,11 +408,7 @@ export class FlowExecutor {
         let attempts = node.retries + 1;
         while (attempts-- > 0 && !s.closed) {
           await s.playPrompt(node.prompt);
-          const digits = await s.collectDigits({
-            maxDigits: node.maxDigits,
-            terminator: node.terminator,
-            firstTimeoutMs: node.timeoutSec * 1000,
-          });
+          const digits = await this.collectDigitsOrSpeech(node);
           await this.event('dtmf', node.id, { digits });
           if (digits && this.validDigits(digits, node.validate)) {
             s.vars[node.variable] = digits;
@@ -607,6 +603,59 @@ export class FlowExecutor {
     if (dur != null && dur <= maxSilenceSec + 0.7) return null; // silencio puro — nao gasta ASR
     const text = await transcribe(this.session.tenantId, path, this.flow.language);
     return text && text.trim() ? text.trim() : null;
+  }
+
+  /**
+   * Coleta digitos por DTMF ou por voz (CPF/CNPJ/telefone falados).
+   * Corre DTMF e gravacao em paralelo; o que chegar primeiro vence.
+   */
+  private async collectDigitsOrSpeech(node: Extract<FlowNode, { type: 'collect_digits' }>): Promise<string | null> {
+    const s = this.session;
+    if (!node.allowSpeech) {
+      return s.collectDigits({ maxDigits: node.maxDigits, terminator: node.terminator, firstTimeoutMs: node.timeoutSec * 1000 });
+    }
+    const dtmfP = s.collectDigits({ maxDigits: node.maxDigits, terminator: node.terminator, firstTimeoutMs: node.timeoutSec * 1000 });
+    const recName = `cd-${s.channelId.slice(0, 12)}-${Date.now()}`;
+    const recP = s.record(recName, node.timeoutSec, Math.min(3, node.timeoutSec), false);
+    const winner = await Promise.race([
+      dtmfP.then((d) => ({ kind: 'dtmf' as const, d })),
+      recP.then((path) => ({ kind: 'rec' as const, path })),
+    ]);
+    if (winner.kind === 'dtmf') {
+      if (winner.d) { void s.cancelRecording(recName); return winner.d; }
+      // timeout sem tecla: verifica fala na gravacao em andamento
+      const path = await Promise.race([recP, new Promise<null>((r) => setTimeout(() => r(null), 2500))]);
+      if (path) {
+        const text = await this.transcribeIfSpeech(path, Math.min(3, node.timeoutSec));
+        if (text) return this.spokenToDigits(text);
+      }
+      void s.cancelRecording(recName);
+      return null;
+    }
+    // gravacao encerrou primeiro (fala ou silencio)
+    if (winner.path) {
+      const text = await this.transcribeIfSpeech(winner.path, Math.min(3, node.timeoutSec));
+      if (text) return this.spokenToDigits(text);
+    }
+    // silencio: aguarda tecla pelo restante do tempo
+    const d = await Promise.race([dtmfP, new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
+    return d;
+  }
+
+  /** Converte fala ("quatro dois nove...") em digitos. */
+  private spokenToDigits(text: string): string | null {
+    const map: Record<string, string> = {
+      zero: '0', um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4',
+      cinco: '5', seis: '6', meia: '6', sete: '7', oito: '8', nove: '9',
+    };
+    let out = '';
+    for (const token of text.toLowerCase().replace(/[.,;:!?]/g, ' ').split(/\s+/)) {
+      if (!token) continue;
+      if (/^\d+$/.test(token)) { out += token; continue; }
+      if (map[token]) { out += map[token]; continue; }
+      // palavra nao numerica: ignora (ex: "cpf", "e")
+    }
+    return out || null;
   }
 
   private validDigits(digits: string, validate: string): boolean {
