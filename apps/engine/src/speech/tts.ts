@@ -124,7 +124,12 @@ export async function ttsToMedia(tenantId: string, text: string): Promise<string
     await mkdir(dir, { recursive: true });
     let result: { buf: Buffer | null; format: string };
     if (speech.apiKey) {
-      result = await openaiTts(speech, text);
+      try {
+        result = await openaiTts(speech, text);
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'TTS com chave falhou; usando voz de reserva');
+        result = await gtranslateTts(text, speech.language).catch(() => ({ ...beep(), format: 'tone' }));
+      }
     } else {
       try {
         result = await gtranslateTts(text, speech.language);

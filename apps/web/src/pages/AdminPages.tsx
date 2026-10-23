@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { IntegrationManager } from './IntegrationManager.js';
 import { QueueMembers } from './QueueMembers.js';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -146,9 +146,24 @@ export function FlowsPage() {
 
 export function IntegrationsPage() {
   const tenantId = useEffectiveTenantId();
-  const speech = useTenantQuery(['integrations', 'speech'], () => get<{ asrProvider: string; ttsProvider: string; nluProvider: string; ttsVoice: string; language: string } | null>('/speech-config'));
+  const speech = useTenantQuery(['integrations', 'speech'], () => get<{ asrProvider: string; ttsProvider: string; nluProvider: string; ttsVoice: string; language: string; config?: Record<string, unknown>; hasApiKey?: boolean } | null>('/speech-config'));
   const [voice, setVoice] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
   const [busy, setBusy] = useState(false);
-  const saveVoice = async () => { setBusy(true); try { await put('/speech-config', { ttsVoice: voice }); await speech.refetch(); toast.success('Voz atualizada'); } catch (error) { toast.error('Erro ao salvar voz', getErrorMessage(error)); } finally { setBusy(false); } };
-  return <div className="space-y-5"><PageHeader title="Integrações" description="Conexões ERP, WhatsApp e serviços de voz" />{!tenantId ? <Card>Selecione uma empresa no topo para continuar.</Card> : <><IntegrationManager category="erp" /><IntegrationManager category="whatsapp" /><Card title="Voz e reconhecimento">{speech.error && <p role="alert" className="text-red-700">{getErrorMessage(speech.error)}</p>}<p className="mb-3 text-sm text-slate-600">ASR: {speech.data?.asrProvider ?? 'openai'} · TTS: {speech.data?.ttsProvider ?? 'openai'} · NLU: {speech.data?.nluProvider ?? 'openai'}</p><label className="label block">Voz TTS<input className="input mt-1" value={voice || speech.data?.ttsVoice || ''} onChange={(event) => setVoice(event.target.value)} /></label><Button className="mt-3" loading={busy} onClick={() => void saveVoice()}>Salvar voz</Button></Card><p className="text-sm text-slate-500">Conexões são armazenadas com credenciais criptografadas. O teste de conexão e o envio real dependem da implementação dos adaptadores de telefonia e mensageria.</p></>}</div>;
+  useEffect(() => { if (speech.data?.config && typeof speech.data.config.openaiBaseUrl === 'string') setBaseUrl(speech.data.config.openaiBaseUrl); }, [speech.data]);
+  const saveVoice = async () => {
+    setBusy(true);
+    try {
+      const payload: Record<string, unknown> = {};
+      if (voice || !speech.data) payload.ttsVoice = voice || speech.data?.ttsVoice || 'nova';
+      if (apiKey.trim()) payload.secrets = { openaiApiKey: apiKey.trim() };
+      if (baseUrl.trim() !== (speech.data?.config && typeof speech.data.config.openaiBaseUrl === 'string' ? speech.data.config.openaiBaseUrl : '')) payload.config = { openaiBaseUrl: baseUrl.trim() };
+      await put('/speech-config', payload);
+      setApiKey('');
+      await speech.refetch();
+      toast.success('Configuração de voz salva');
+    } catch (error) { toast.error('Erro ao salvar voz', getErrorMessage(error)); } finally { setBusy(false); }
+  };
+  return <div className="space-y-5"><PageHeader title="Integrações" description="Conexões ERP, WhatsApp e serviços de voz" />{!tenantId ? <Card>Selecione uma empresa no topo para continuar.</Card> : <><IntegrationManager category="erp" /><IntegrationManager category="whatsapp" /><Card title="Voz e reconhecimento">{speech.error && <p role="alert" className="text-red-700">{getErrorMessage(speech.error)}</p>}<p className="mb-3 flex flex-wrap items-center gap-2 text-sm text-slate-600">ASR: {speech.data?.asrProvider ?? 'openai'} · TTS: {speech.data?.ttsProvider ?? 'openai'} · NLU: {speech.data?.nluProvider ?? 'openai'}<span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${speech.data?.hasApiKey ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}><span className={`h-2 w-2 rounded-full ${speech.data?.hasApiKey ? 'bg-emerald-500' : 'bg-amber-500'}`} />{speech.data?.hasApiKey ? 'Chave configurada' : 'Sem chave (voz de reserva)'}</span></p><div className="grid gap-4 sm:grid-cols-2"><label className="label block">Chave da API (OpenAI ou compatível)<input className="input mt-1" type="password" placeholder={speech.data?.hasApiKey ? '•••••••• (deixe vazio para manter)' : 'sk-...'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="new-password" /></label><label className="label block">URL base (opcional — padrão OpenAI)<input className="input mt-1" placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} /></label></div><label className="label mt-4 block">Voz TTS (ex.: nova, alloy, shimmer)<input className="input mt-1" value={voice || speech.data?.ttsVoice || ''} onChange={(event) => setVoice(event.target.value)} /></label><p className="mt-2 text-sm text-slate-500">A chave permite voz natural (TTS) e compreensão de fala (ASR). Sem chave, a URA usa uma voz de reserva e entende apenas teclas.</p><Button className="mt-3" loading={busy} onClick={() => void saveVoice()}>Salvar configuração</Button></Card><p className="text-sm text-slate-500">Conexões são armazenadas com credenciais criptografadas.</p></>}</div>;
 }

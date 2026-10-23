@@ -105,7 +105,13 @@ export class SpeechConfigController {
   constructor(private readonly prisma: PrismaService) {}
 
   @Get()
-  async get() { return this.prisma.speechConfig.findUnique({ where: { tenantId: tenant() }, select: speechSelect }); }
+  async get() {
+    const row = await this.prisma.speechConfig.findUnique({ where: { tenantId: tenant() } });
+    if (!row) return null;
+    const secrets = decryptSecrets<Record<string, string | undefined>>(row.secretsEnc);
+    const { secretsEnc: _hidden, ...safe } = row;
+    return { ...safe, hasApiKey: Boolean(secrets.openaiApiKey) };
+  }
 
   @Put()
   @Roles('superadmin', 'tenant_admin')
