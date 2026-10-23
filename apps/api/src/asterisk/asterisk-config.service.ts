@@ -378,7 +378,7 @@ export class AsteriskConfigService implements OnModuleInit {
       }
       const aor = extensionEndpointName(slug, ext);
       const statuses = contacts.get(aor) ?? [];
-      const online = statuses.some((s) => s.toLowerCase() === 'avail');
+      const online = statuses.some((s) => ['avail', 'reachable'].includes(s.toLowerCase()));
       result.push({
         id: ext.id,
         number: ext.number,

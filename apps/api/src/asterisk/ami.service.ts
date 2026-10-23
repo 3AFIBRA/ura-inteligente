@@ -128,9 +128,19 @@ export class AmiService implements OnModuleDestroy {
     const events = await this.actionWithEvents({ Action: 'PJSIPShowContacts' });
     const map = new Map<string, string[]>();
     for (const evt of events) {
-      if (evtStr(evt, 'event') !== 'ContactStatusDetail') continue;
-      const aor = evtStr(evt, 'aor');
-      const status = evtStr(evt, 'status');
+      const name = evtStr(evt, 'event');
+      // PJSIPShowContacts emite ContactList (campo: endpoint); PJSIPShowEndpoint emite ContactStatusDetail (campo: aor)
+      let aor = '';
+      let status = '';
+      if (name === 'ContactList') {
+        aor = evtStr(evt, 'endpoint');
+        status = evtStr(evt, 'status');
+      } else if (name === 'ContactStatusDetail') {
+        aor = evtStr(evt, 'aor');
+        status = evtStr(evt, 'status');
+      } else {
+        continue;
+      }
       if (!aor || !status) continue;
       const list = map.get(aor) ?? [];
       list.push(status);
