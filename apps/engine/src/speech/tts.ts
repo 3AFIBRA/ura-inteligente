@@ -196,6 +196,18 @@ export async function classifyIntent(tenantId: string, utterance: string, intent
   if (!speech.apiKey) return null;
   try {
     const base = (speech.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    const HINTS: Record<string, string> = {
+      segunda_via: 'segunda via do boleto/fatura, refazer boleto, pagar conta, linha digitável',
+      cadastro: 'ser cliente, assinar plano, contratar internet, novo cadastro, virar cliente',
+      financeiro: 'falar com financeiro, negociar débito, acordo, parcelamento, dívida',
+      suporte: 'problema técnico, internet lenta/fora, sem conexão, modem, sinal wi-fi',
+      desbloqueio: 'desbloquear internet/linha, foi bloqueado, cortado por inadimplência',
+      atendente: 'falar com atendente/humano/pessoa real, atendente por favor',
+      cancelar: 'cancelar plano/serviço, encerrar contrato',
+      confirmar: 'sim, confirmo, correto, isso mesmo, pode ser',
+      negar: 'não, errado, não é isso, cancela',
+    };
+    const hints = intents.filter((i) => HINTS[i]).map((i) => `- ${i}: ${HINTS[i]}`).join('\n');
     const res = await fetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${speech.apiKey}` },
@@ -206,7 +218,11 @@ export async function classifyIntent(tenantId: string, utterance: string, intent
         messages: [
           {
             role: 'system',
-            content: `Você classifica a fala de um cliente em uma URA telefônica brasileira. Intenções possíveis: ${intents.join(', ')}. Responda SOMENTE com JSON no formato {"intent": "<uma das intenções>"} ou {"intent": null} se nenhuma se encaixar.`,
+            content:
+              `Você classifica a fala de um cliente em uma URA telefônica brasileira. A transcrição pode conter erros (áudio de telefone 8kHz) — interprete foneticamente quando necessário. Intenções possíveis: ${intents.join(', ')}.\n` +
+              (hints ? `Significado de cada intenção:\n${hints}\n` : '') +
+              'Exemplos: "quero a segunda via do boleto" → segunda_via; "minha internet caiu" → suporte; "quero falar com uma pessoa" → atendente; "quero ser cliente de vocês" → cadastro.\n' +
+              'Responda SOMENTE com JSON no formato {"intent": "<uma das intenções>"} ou {"intent": null} se nenhuma se encaixar.',
           },
           { role: 'user', content: utterance.slice(0, 500) },
         ],
