@@ -31,12 +31,15 @@ exten => s,1,NoOp(Hangup handler ${CHANNEL} cause=${HANGUPCAUSE})
 
 ; Entra na fila. ARG1 = nome da fila no asterisk, ARG2 = timeout, ARG3 = tenantId
 [sub-queue]
-exten => s,1,NoOp(Fila ${ARG1} tenant=${ARG3})
- same => n,Set(__URA_QUEUE=${ARG1})
- same => n,Set(CDR(userfield)=queue:${ARG1})
- same => n,Queue(${ARG1},tTkK,,,${ARG2})
+; Entra na fila. Variaveis de canal (definidas pelo engine antes do continue):
+;   URA_QUEUE = nome da fila, URA_TIMEOUT = seg max de espera (0 = ilimitado), URA_TENANT = id do tenant
+exten => s,1,NoOp(Fila ${URA_QUEUE} tenant=${URA_TENANT})
+ same => n,Set(__URA_QUEUE=${URA_QUEUE})
+ same => n,Set(CDR(userfield)=queue:${URA_QUEUE})
+ same => n,Set(UQUEUE_TIMEOUT=${IF($["x${URA_TIMEOUT}"="x"]?0:${URA_TIMEOUT})})
+ same => n,Queue(${URA_QUEUE},tTkK,,,${UQUEUE_TIMEOUT})
  same => n,NoOp(Saiu da fila: ${QUEUESTATUS})
- same => n,Stasis(${ARI_APP},queue-exit,${ARG3},${ARG1},${QUEUESTATUS})
+ same => n,Stasis(${ARI_APP},queue-exit,${URA_TENANT},${URA_QUEUE},${QUEUESTATUS})
  same => n,Hangup()
 
 ; Agente da fila (membro) chamado via Local channel
