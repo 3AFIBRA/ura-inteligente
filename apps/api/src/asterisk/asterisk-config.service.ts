@@ -154,11 +154,11 @@ export class AsteriskConfigService implements OnModuleInit {
     const tenants = await this.prisma.tenant.findMany({ select: { id: true }, orderBy: { slug: 'asc' } });
     await writeFile(
       join(dir, 'pjsip-all.conf'),
-      tenants.map((t) => `#include pjsip-${t.id}.conf`).join('\n') + '\n',
+      tenants.map((t) => `#include tenants/pjsip-${t.id}.conf`).join('\n') + '\n',
     );
     await writeFile(
       join(dir, 'extensions-all.conf'),
-      tenants.map((t) => `#include extensions-${t.id}.conf`).join('\n') + '\n',
+      tenants.map((t) => `#include tenants/extensions-${t.id}.conf`).join('\n') + '\n',
     );
   }
 
