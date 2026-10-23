@@ -1,11 +1,14 @@
 #!/bin/sh
 set -e
 
-# Renderiza variaveis de ambiente (.env) nos templates *.conf.tpl
+# Renderiza variaveis de ambiente (.env) nos templates *.conf.tpl.
+# IMPORTANTE: lista explicita de variaveis — envsubst sem lista apagaria as
+# variaveis de runtime do dialplan (${EXTEN}, ${ARG1}, ${URA_QUEUE}, ...).
+SUBST_VARS='$ARI_APP $ARI_USER $ARI_PASSWORD $AMI_USER $AMI_PASSWORD $PUBLIC_IP $RTP_PORT_START $RTP_PORT_END $TURN_USER $TURN_PASSWORD'
 for tpl in /etc/asterisk/*.conf.tpl; do
   [ -f "$tpl" ] || continue
   out="${tpl%.tpl}"
-  envsubst < "$tpl" > "$out"
+  envsubst "$SUBST_VARS" < "$tpl" > "$out"
 done
 
 # Garante os arquivos agregadores gerados pela API
