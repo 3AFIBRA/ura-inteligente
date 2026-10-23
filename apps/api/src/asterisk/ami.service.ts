@@ -89,7 +89,9 @@ export class AmiService implements OnModuleDestroy {
   }
 
   async reloadPjsip() {
-    await this.action({ Action: 'Command', Command: 'pjsip reload' });
+    await this.action({ Action: 'Command', Command: 'module reload res_pjsip.so' });
+    // recarrega tambem os objetos identify (res_pjsip_endpoint_identifier_ip)
+    await this.action({ Action: 'Command', Command: 'module reload res_pjsip_endpoint_identifier_ip.so' }).catch(() => undefined);
   }
 
   async reloadDialplan() {
