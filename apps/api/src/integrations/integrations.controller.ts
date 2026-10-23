@@ -110,7 +110,8 @@ export class SpeechConfigController {
     if (!row) return null;
     const secrets = decryptSecrets<Record<string, string | undefined>>(row.secretsEnc);
     const { secretsEnc: _hidden, ...safe } = row;
-    return { ...safe, hasApiKey: Boolean(secrets.openaiApiKey) };
+    const apiKey = secrets.openaiApiKey ?? '';
+    return { ...safe, hasApiKey: Boolean(apiKey), keyHint: apiKey ? `…${apiKey.slice(-4)}` : null };
   }
 
   @Put()
