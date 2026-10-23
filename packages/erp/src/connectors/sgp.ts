@@ -8,7 +8,6 @@ import {
   toAmount,
   toBool,
   toCustomerStatus,
-  toDocument,
   toInvoiceStatus,
   toIsoDate,
   toPhone,
@@ -24,9 +23,10 @@ export interface SgpConnectorDeps {
 }
 
 /**
- * SGP (TSMX) - API URA.
+ * SGP (TSMX) - API URA oficial.
  * Autenticacao por `token` + `app` enviados no corpo (form-urlencoded) de cada POST.
- * Endpoints padrao: /api/ura/consultacliente/, /api/ura/titulos/, /api/ura/segundavia/, /api/ura/liberacaopromessa/.
+ * Doc: /api/ura/consultacliente/, /api/ura/fatura2via/, /api/ura/chamado/,
+ *      /api/ura/liberacaopromessa/, /api/ura/verificaacesso/, /api/precadastro/{F|J}/
  */
 export class SgpApiConnector implements ErpConnector {
   readonly type: ErpType = 'sgp';
@@ -35,6 +35,8 @@ export class SgpApiConnector implements ErpConnector {
   private readonly cfg: Record<string, unknown>;
   private readonly token: string;
   private readonly app: string;
+  /** cache clienteId/cpfcnpj -> contratos (evita reconsultar para fatura2via/chamado) */
+  private readonly contractsCache = new Map<string, AnyRecord[]>();
   private lastCustomerId: string | undefined;
 
   constructor(
@@ -45,8 +47,8 @@ export class SgpApiConnector implements ErpConnector {
     this.token = opts.secrets.token ?? opts.secrets.apiKey ?? '';
     this.app = (typeof opts.config.app === 'string' && opts.config.app) || opts.secrets.app || 'ura';
     if (!deps.http) {
-      if (!opts.config.baseUrl) throw new ErpError('baseUrl do SGP nao informada', 'INVALID');
-      if (!this.token) throw new ErpError('Token do SGP nao informado', 'INVALID');
+      if (!opts.config.baseUrl) throw new ErpError('URL do SGP nao informada (ex.: https://suasempresa.sgp.net.br)', 'INVALID');
+      if (!this.token) throw new ErpError('Token do SGP nao informado (SGP > Administracao > Integracoes > Tokens)', 'INVALID');
     }
     this.http =
       deps.http ??
@@ -62,72 +64,104 @@ export class SgpApiConnector implements ErpConnector {
     return typeof v === 'string' && v.trim() ? v.trim() : def;
   }
 
-  private async post(endpoint: string, params: Record<string, string | undefined>): Promise<AnyRecord> {
+  private async post(endpoint: string, params: Record<string, string | number | undefined>): Promise<AnyRecord> {
     const form = new URLSearchParams({ token: this.token, app: this.app });
-    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') form.set(k, v);
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') form.set(k, String(v));
     const res = await this.http.post<AnyRecord | string>(endpoint, form.toString(), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
     const data = typeof res.data === 'string' ? safeJson(res.data) : (res.data ?? {});
-    if (data && typeof data === 'object' && 'status' in data && Number(data.status) === 0) {
-      const msg = toStr(pick(data, 'msg', 'message')) ?? 'erro';
-      if (/token|autentica|autoriza/i.test(msg)) throw new ErpError(`SGP: ${msg}`, 'AUTH', data);
-      if (/nao encontrado|não encontrado|inexistente/i.test(msg)) return { ...data, __notFound: true };
-      throw new ErpError(`SGP: ${msg}`, 'INVALID', data);
+    if (data && typeof data === 'object' && 'status' in data) {
+      const status = Number(data.status);
+      const msg = toStr(pick(data, 'msg', 'message')) ?? '';
+      if (status === 0 && /token|autentica|autoriza|invalido/i.test(msg)) {
+        throw new ErpError(`SGP: ${msg}`, 'AUTH', data);
+      }
     }
-    return data as AnyRecord;
+    return (data ?? {}) as AnyRecord;
   }
+
+  // ---------------------------------------------------------------- cliente
 
   private mapCustomer(doc: string, data: AnyRecord): ErpCustomer | null {
     const contracts = unwrapList(pick(data, 'contratos') ?? data);
-    const first = contracts[0] ?? (data.razaoSocial || data.nome ? data : null);
+    const first = contracts[0] ?? (data.razaoSocial || data.razao_social || data.nome ? data : null);
     if (!first) return null;
-    const clientId = toStr(pick(first, 'clienteId', 'cliente_id', 'idCliente', 'id'));
-    return {
-      id: clientId ?? doc,
-      name: toStrRequired(pick(first, 'razaoSocial', 'nome', 'razao_social', 'cliente')),
-      document: doc || toDocument(pick(first, 'cpfcnpj', 'cpf_cnpj')),
+    const clientId = toStrRequired(pick(first, 'clienteId', 'cliente_id', 'idCliente', 'id'));
+    const document = doc || onlyDigits(toStr(pick(first, 'cpfCnpj', 'cpfcnpj', 'cpf_cnpj')) ?? '');
+    const customer: ErpCustomer = {
+      id: clientId || document,
+      name: toStrRequired(pick(first, 'razaoSocial', 'razao_social', 'nome', 'cliente')),
+      document,
       phone: toPhone(pick(first, 'telefone', 'fone')),
-      mobile: toPhone(pick(first, 'celular', 'telefoneCelular', 'whatsapp')),
+      mobile: this.pickMobile(first),
       email: toStr(pick(first, 'email')),
-      address: toStr(pick(first, 'endereco', 'enderecoLogradouro')),
-      status: toCustomerStatus(pick(first, 'contratoStatusDisplay', 'contratoStatus', 'status')),
+      address: this.fullAddress(first),
+      status: toCustomerStatus(pick(first, 'status', 'contratoStatusDisplay', 'contratoStatus')),
       contracts: contracts.map((c) => ({
         id: toStrRequired(pick(c, 'contratoId', 'contrato', 'id')),
-        plan: toStr(pick(c, 'planoNome', 'plano', 'servico')),
-        status: toStr(pick(c, 'contratoStatusDisplay', 'contratoStatus', 'status')),
+        plan: toStr(pick(c, 'planoNome', 'plano', 'planointernet', 'servico')),
+        status: toStr(pick(c, 'status', 'contratoStatusDisplay', 'contratoStatus')),
       })),
       raw: data,
     };
+    // cacheia contratos para as demais acoes (fatura2via, chamado, liberacao)
+    if (contracts.length > 0) {
+      if (customer.id) this.contractsCache.set(customer.id, contracts);
+      if (document) this.contractsCache.set(document, contracts);
+    }
+    return customer;
   }
 
-  private mapInvoice(customerId: string, r: AnyRecord): ErpInvoice {
-    const dueDate = toIsoDate(pick(r, 'vencimento', 'dataVencimento', 'due_date'));
-    return {
-      id: toStrRequired(pick(r, 'numeroDocumento', 'numero_documento', 'id', 'titulo', 'fatura')),
-      customerId,
-      dueDate,
-      amount: toAmount(pick(r, 'valorCorrigido', 'valor_corrigido', 'valor', 'amount')),
-      status: toInvoiceStatus(pick(r, 'status', 'situacao'), dueDate, pick(r, 'pago')),
-      digitableLine: toStr(pick(r, 'linhaDigitavel', 'linha_digitavel')),
-      barcode: toStr(pick(r, 'codigoBarras', 'codigo_barras')),
-      pixCode: toStr(pick(r, 'codigoPix', 'pixCopiaECola', 'pix', 'qrCodePix')),
-      pdfUrl: toStr(pick(r, 'link', 'linkBoleto', 'url', 'pdf_url')),
-      raw: r,
-    };
+  private pickMobile(rec: AnyRecord): string | undefined {
+    const cargos = unwrapList(pick(rec, 'telefones_cargos', 'telefonesCargos'));
+    for (const c of cargos) {
+      const n = onlyDigits(toStr(pick(c, 'contato', 'telefone')) ?? '');
+      if (n.length >= 11) return n;
+    }
+    return toPhone(pick(rec, 'celular', 'whatsapp', 'telefone'));
+  }
+
+  private fullAddress(rec: AnyRecord): string | undefined {
+    const parts = [
+      toStr(pick(rec, 'endereco_logradouro', 'enderecoLogradouro', 'logradouro')),
+      toStr(pick(rec, 'endereco_numero', 'enderecoNumero', 'numero')),
+      toStr(pick(rec, 'endereco_bairro', 'bairro')),
+      toStr(pick(rec, 'endereco_cidade', 'cidade')),
+      toStr(pick(rec, 'endereco_uf', 'uf')),
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(', ') : toStr(pick(rec, 'endereco'));
+  }
+
+  /**
+   * Resolve o contrato (necessario para fatura2via/chamado/liberacao).
+   * Ordem: cache local -> consulta por documento -> trata o id como contrato.
+   */
+  private async resolveContract(customerId: string): Promise<string | null> {
+    const d = onlyDigits(customerId);
+    const cached = this.contractsCache.get(customerId) ?? this.contractsCache.get(d);
+    if (cached?.length) return toStrRequired(pick(cached[0], 'contratoId', 'contrato', 'id')) || null;
+    if (d.length === 11 || d.length === 14) {
+      const data = await this.post(this.ep('customerEndpoint', '/api/ura/consultacliente/'), { cpfcnpj: d }).catch(() => null);
+      const contracts = data ? unwrapList(pick(data, 'contratos')) : [];
+      if (contracts.length > 0) {
+        this.contractsCache.set(d, contracts);
+        return toStrRequired(pick(contracts[0], 'contratoId', 'contrato', 'id')) || null;
+      }
+      return null;
+    }
+    // nao eh documento e nao temos cache: assume que o proprio id eh o contrato
+    return customerId || null;
   }
 
   async testConnection(): Promise<ErpTestResult> {
     const started = Date.now();
     try {
-      // consulta com documento invalido: valida token/url sem expor dados
       await this.post(this.ep('customerEndpoint', '/api/ura/consultacliente/'), { cpfcnpj: '00000000000' });
       return { ok: true, message: 'Conexao com o SGP estabelecida', latencyMs: Date.now() - started };
     } catch (err) {
       const e = err as ErpError;
-      if (e.code === 'INVALID' || e.code === 'NOT_FOUND') {
-        return { ok: true, message: 'Conexao com o SGP estabelecida', latencyMs: Date.now() - started };
-      }
+      if (e.code === 'NOT_FOUND' || e.code === 'INVALID') return { ok: true, message: 'Conexao com o SGP estabelecida', latencyMs: Date.now() - started };
       return { ok: false, message: e.message, latencyMs: Date.now() - started };
     }
   }
@@ -136,7 +170,6 @@ export class SgpApiConnector implements ErpConnector {
     const doc = onlyDigits(document);
     if (!doc) return null;
     const data = await this.post(this.ep('customerEndpoint', '/api/ura/consultacliente/'), { cpfcnpj: doc });
-    if (data.__notFound) return null;
     return this.mapCustomer(doc, data);
   }
 
@@ -144,92 +177,122 @@ export class SgpApiConnector implements ErpConnector {
     const ep = this.ep('customerEndpoint', '/api/ura/consultacliente/');
     for (const v of phoneVariants(phone)) {
       if (!/^\d+$/.test(v)) continue;
-      const data = await this.post(ep, { telefone: v }).catch((err: ErpError) => {
-        if (err.code === 'INVALID') return { __notFound: true } as AnyRecord;
-        throw err;
-      });
-      if (data.__notFound) continue;
+      const data = await this.post(ep, { telefone: v }).catch(() => null);
+      if (!data) continue;
       const c = this.mapCustomer('', data);
       if (c) return c;
     }
     return null;
   }
 
-  /** O SGP identifica o cliente por CPF/CNPJ; aceitamos id numerico de cliente ou o documento. */
-  private async resolveDocument(customerId: string): Promise<{ cpfcnpj?: string; clienteId?: string }> {
-    const d = onlyDigits(customerId);
-    if (d.length === 11 || d.length === 14) return { cpfcnpj: d };
-    return { clienteId: customerId };
-  }
+  // ---------------------------------------------------------------- faturas
 
   async listOpenInvoices(customerId: string): Promise<ErpInvoice[]> {
     this.lastCustomerId = customerId;
-    const ident = await this.resolveDocument(customerId);
-    const data = await this.post(this.ep('invoicesEndpoint', '/api/ura/titulos/'), {
-      cpfcnpj: ident.cpfcnpj,
-      clienteId: ident.clienteId,
-      ...(this.cfg.contractId ? { contrato: String(this.cfg.contractId) } : {}),
-    });
-    if (data.__notFound) return [];
-    const rows = unwrapList(pick(data, 'titulos', 'faturas') ?? data);
-    return rows.map((r) => this.mapInvoice(customerId, r)).filter((i) => i.status === 'open' || i.status === 'overdue');
+    const contrato = await this.resolveContract(customerId);
+    if (!contrato) return [];
+    const data = await this.post(this.ep('secondCopyEndpoint', '/api/ura/fatura2via/'), { contrato });
+    const links = unwrapList(pick(data, 'links', 'faturas', 'titulos'));
+    const invoices = links.map((r) => this.mapInvoice(customerId, r));
+    // PIX copia-e-cola quando nao vem na resposta da fatura
+    for (const inv of invoices) {
+      if (!inv.pixCode && inv.raw?.id) {
+        const pix = await this.getPixCode(String(inv.raw.id)).catch(() => undefined);
+        if (pix) inv.pixCode = pix;
+      }
+    }
+    return invoices;
+  }
+
+  private mapInvoice(customerId: string, r: AnyRecord): ErpInvoice {
+    const dueDate = toIsoDate(pick(r, 'vencimento', 'dataVencimento', 'due_date'));
+    const amount = toAmount(pick(r, 'valor', 'valorCorrigido', 'valor_total', 'amount'));
+    const id = toStrRequired(pick(r, 'fatura', 'numeroDocumento', 'id', 'titulo')) || '0';
+    return {
+      id,
+      customerId,
+      dueDate,
+      amount,
+      status: toInvoiceStatus(pick(r, 'status', 'situacao'), dueDate, pick(r, 'pago')),
+      digitableLine: toStr(pick(r, 'linhadigitavel', 'linhaDigitavel', 'linha_digitavel')),
+      barcode: toStr(pick(r, 'codigoBarras', 'codigo_barras')),
+      pixCode: toStr(pick(r, 'codigopix', 'codigoPix', 'pixCopiaECola', 'pix')),
+      pdfUrl: toStr(pick(r, 'link', 'linkBoleto', 'url')),
+      raw: r,
+    };
+  }
+
+  /** PIX copia-e-cola via /api/ura/pagamento/pix/{id}/ (quando ausente na fatura). */
+  private async getPixCode(invoiceRowId: string): Promise<string | undefined> {
+    const ep = this.ep('pixEndpoint', `/api/ura/pagamento/pix/${invoiceRowId}/`);
+    const data = await this.post(ep, {});
+    return toStr(pick(data, 'pix', 'codigopix', 'pixCopiaECola'));
   }
 
   async getInvoice(invoiceId: string): Promise<ErpInvoice | null> {
-    // A API URA do SGP lista titulos por cliente; sem o cliente nao ha busca direta pelo id.
-    // Aceita o formato "<customerId>:<invoiceId>" ou usa o ultimo cliente consultado nesta instancia.
+    // formato aceito: "<customerId>" (primeira fatura) ou "<customerId>:<invoiceId>"
     let customerId = this.lastCustomerId;
     let id = invoiceId;
     if (invoiceId.includes(':')) [customerId, id] = invoiceId.split(':', 2);
     if (!customerId) throw new ErpNotSupportedError('get_invoice (SGP exige o cliente; use listOpenInvoices)');
     const list = await this.listOpenInvoices(customerId);
-    return list.find((i) => i.id === id) ?? null;
+    return list.find((i) => i.id === id) ?? list[0] ?? null;
   }
 
+  /** 2a via: o SGP retorna o link do boleto diretamente na fatura2via. */
   async getInvoicePdf(invoiceId: string): Promise<ErpDocument> {
-    const ep = this.ep('secondCopyEndpoint', '/api/ura/segundavia/');
-    const filename = `boleto-${invoiceId}.pdf`;
+    const invoice = await this.getInvoice(invoiceId);
+    if (!invoice) throw new ErpNotFoundError('Fatura em aberto');
+    if (invoice.pdfUrl) return { filename: `boleto-${invoice.id}.pdf`, mimeType: 'application/pdf', url: invoice.pdfUrl };
+    // fallback: baixa o PDF direto do endpoint (algumas instalacoes geram PDF no POST)
+    const ep = this.ep('secondCopyEndpoint', '/api/ura/fatura2via/');
+    const contrato = await this.resolveContract(invoice.customerId);
     const res = await this.http.post<unknown>(
       ep,
-      new URLSearchParams({ token: this.token, app: this.app, titulo: invoiceId, numeroDocumento: invoiceId, formato: 'pdf' }).toString(),
+      new URLSearchParams({ token: this.token, app: this.app, ...(contrato ? { contrato } : {}), formato: 'pdf' }).toString(),
       { responseType: 'arraybuffer', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/pdf,application/json,*/*' } },
     );
     const buf = Buffer.isBuffer(res.data) ? res.data : Buffer.from(res.data as ArrayBuffer);
     const text = buf.toString('utf8');
-    if (text.startsWith('%PDF')) return { filename, mimeType: 'application/pdf', base64: buf.toString('base64') };
+    if (text.startsWith('%PDF')) return { filename: `boleto-${invoiceId}.pdf`, mimeType: 'application/pdf', base64: buf.toString('base64') };
     const json = safeJson(text);
     if (json) {
-      if (Number(json.status) === 0) throw new ErpError(`SGP: ${toStr(pick(json, 'msg')) ?? 'erro na segunda via'}`, 'INVALID', json);
-      const b64 = toStr(pick(json, 'pdf', 'base64', 'arquivo', 'boleto'));
-      if (b64 && b64.length > 100) return { filename, mimeType: 'application/pdf', base64: b64.replace(/^data:[^,]+,/, '') };
       const url = toStr(pick(json, 'link', 'url', 'linkBoleto'));
-      if (url) return { filename, mimeType: 'application/pdf', url };
+      if (url) return { filename: `boleto-${invoiceId}.pdf`, mimeType: 'application/pdf', url };
+      const b64 = toStr(pick(json, 'pdf', 'base64', 'arquivo', 'boleto'));
+      if (b64 && b64.length > 100) return { filename: `boleto-${invoiceId}.pdf`, mimeType: 'application/pdf', base64: b64.replace(/^data:[^,]+,/, '') };
     }
     const b64 = responseToBase64(text);
-    if (b64) return { filename, mimeType: 'application/pdf', base64: b64 };
+    if (b64) return { filename: `boleto-${invoiceId}.pdf`, mimeType: 'application/pdf', base64: b64 };
     throw new ErpNotFoundError('Boleto');
   }
 
+  // ---------------------------------------------------------------- cadastro
+
+  /** Pre-cadastro via /api/precadastro/F/ (pessoa fisica) ou /api/precadastro/J/ (juridica). */
   async createCustomer(data: ErpNewCustomer): Promise<ErpCustomer> {
-    const ep = typeof this.cfg.createCustomerEndpoint === 'string' ? this.cfg.createCustomerEndpoint : '';
-    if (!ep) throw new ErpNotSupportedError('createCustomer (configure createCustomerEndpoint, ex.: /api/ura/prospecto/)');
     const doc = onlyDigits(data.document);
+    const isJuridica = doc.length === 14;
+    const ep = this.ep(isJuridica ? 'createCustomerEndpointJ' : 'createCustomerEndpoint', isJuridica ? '/api/precadastro/J/' : '/api/precadastro/F/');
+    const phone = normalizePhoneBR(data.phone);
+    const planoId = toStr(this.cfg.planoId) ?? undefined;
     const resp = await this.post(ep, {
       nome: data.name,
       cpfcnpj: doc,
-      telefone: normalizePhoneBR(data.phone),
       email: data.email,
-      endereco: data.address,
+      plano_id: planoId,
+      logradouro: data.address,
       cidade: data.city,
       uf: data.state,
-      cep: data.zip ? onlyDigits(data.zip) : undefined,
-      observacao: data.notes,
+      observacao: `${data.notes ? `${data.notes} ` : ''}Contato atraves da URA. Telefone: ${phone}`,
     });
+    const err = toStr(pick(resp, 'error', 'erro'));
+    if (err) throw new ErpError(`SGP: ${err}`, 'INVALID', resp);
     return {
-      id: toStr(pick(resp, 'id', 'clienteId', 'prospectoId')) ?? doc,
+      id: toStr(pick(resp, 'id', 'clienteId', 'precadastroId')) ?? doc,
       name: data.name,
       document: doc,
-      mobile: normalizePhoneBR(data.phone),
+      mobile: phone,
       email: data.email,
       address: data.address,
       status: 'active',
@@ -237,65 +300,70 @@ export class SgpApiConnector implements ErpConnector {
     };
   }
 
+  // ---------------------------------------------------------------- status / desbloqueio / chamado
+
   async getConnectionStatus(customerId: string, contractId?: string): Promise<ErpConnectionStatus> {
-    const ident = await this.resolveDocument(customerId);
-    const data = await this.post(this.ep('customerEndpoint', '/api/ura/consultacliente/'), {
-      cpfcnpj: ident.cpfcnpj,
-      clienteId: ident.clienteId,
-    });
-    if (data.__notFound) throw new ErpNotFoundError('Cliente');
-    const contracts = unwrapList(pick(data, 'contratos') ?? data);
+    const contrato = contractId ?? (await this.resolveContract(customerId));
+    const contracts = this.contractsCache.get(customerId) ?? this.contractsCache.get(onlyDigits(customerId)) ?? [];
     const c = (contractId ? contracts.find((x) => toStr(pick(x, 'contratoId', 'contrato', 'id')) === contractId) : undefined) ?? contracts[0];
-    if (!c) throw new ErpNotFoundError('Contrato');
-    const statusTxt = String(pick(c, 'contratoStatusDisplay', 'contratoStatus', 'status') ?? '').toLowerCase();
-    const blocked = /bloq|suspen|reduc/.test(statusTxt) || toBool(pick(c, 'bloqueado'));
+    let blocked = false;
+    let blockReason: string | undefined;
+    let online = false;
+    if (c) {
+      const statusTxt = String(pick(c, 'status', 'contratoStatusDisplay', 'contratoStatus') ?? '').toLowerCase();
+      blocked = /bloq|suspen|reduc/.test(statusTxt) || toBool(pick(c, 'bloqueado'));
+      if (blocked) blockReason = toStr(pick(c, 'status', 'contratoStatusDisplay', 'motivoBloqueio'));
+    }
+    if (contrato) {
+      // verificaacesso: msg "Serviço Offline" => sem conexao
+      const data = await this.post(this.ep('accessStatusEndpoint', '/api/ura/verificaacesso/'), { contrato }).catch(() => null);
+      const msg = toStr(pick(data ?? {}, 'msg', 'message')) ?? '';
+      online = !!msg && !/offline|indispon/i.test(msg);
+    }
     return {
       customerId,
-      contractId: toStr(pick(c, 'contratoId', 'contrato', 'id')),
-      online: toBool(pick(c, 'online', 'conectado')),
+      contractId: contrato ?? undefined,
+      online,
       blocked,
-      blockReason: blocked ? toStr(pick(c, 'contratoStatusDisplay', 'motivoBloqueio')) : undefined,
-      ip: toStr(pick(c, 'ip', 'ipAddress')),
-      lastSeen: toStr(pick(c, 'ultimaConexao', 'ultimo_acesso')),
+      blockReason,
+      ip: toStr(pick(c ?? {}, 'ip', 'ipAddress')),
+      lastSeen: toStr(pick(c ?? {}, 'ultimaConexao', 'ultimo_acesso')),
     };
   }
 
+  /** Liberacao por confianca (promessa de pagamento): /api/ura/liberacaopromessa/. */
   async unlockConnection(customerId: string, contractId?: string): Promise<{ ok: boolean; message?: string }> {
-    let contract = contractId;
-    if (!contract) {
-      const st = await this.getConnectionStatus(customerId);
-      contract = st.contractId;
-    }
-    if (!contract) throw new ErpNotFoundError('Contrato');
-    const ident = await this.resolveDocument(customerId);
+    const contrato = contractId ?? (await this.resolveContract(customerId));
+    if (!contrato) throw new ErpNotFoundError('Contrato');
     try {
-      const data = await this.post(this.ep('unlockEndpoint', '/api/ura/liberacaopromessa/'), {
-        contrato: contract,
-        cpfcnpj: ident.cpfcnpj,
-      });
-      return { ok: true, message: toStr(pick(data, 'msg', 'message')) ?? 'Liberacao em confianca realizada' };
+      const data = await this.post(this.ep('unlockEndpoint', '/api/ura/liberacaopromessa/'), { contrato });
+      const liberado = toBool(pick(data, 'liberado')) || Number(data.status) === 1;
+      return { ok: liberado, message: toStr(pick(data, 'msg', 'message')) ?? (liberado ? 'Liberacao em confianca realizada' : 'Liberacao nao disponivel no momento') };
     } catch (err) {
       const e = err as ErpError;
-      if (e.code === 'INVALID') return { ok: false, message: e.message };
+      if (e.code === 'INVALID' || e.code === 'NOT_FOUND') return { ok: false, message: e.message };
       throw err;
     }
   }
 
+  /** Abertura de chamado: /api/ura/chamado/ (contrato + conteudo). */
   async openTicket(customerId: string, subject: string, description: string): Promise<{ id: string }> {
-    const ep = this.ep('ticketEndpoint', '/api/ura/chamado/');
-    const ident = await this.resolveDocument(customerId);
-    const data = await this.post(ep, {
-      cpfcnpj: ident.cpfcnpj,
-      clienteId: ident.clienteId,
-      assunto: subject,
-      descricao: description,
-      ocorrenciatipo: toStr(this.cfg.ticketTypeId),
+    const contrato = await this.resolveContract(customerId);
+    if (!contrato) throw new ErpNotFoundError('Contrato');
+    const conteudo = description && subject && !description.startsWith(subject) ? `${subject}\n${description}` : (description || subject);
+    const data = await this.post(this.ep('ticketEndpoint', '/api/ura/chamado/'), {
+      contrato,
+      conteudo,
+      ...(toStr(this.cfg.ticketTypeId) ? { ocorrenciatipo: toStr(this.cfg.ticketTypeId) } : {}),
     });
-    return { id: toStrRequired(pick(data, 'id', 'chamadoId', 'ocorrenciaId', 'protocolo'), '0') };
+    const protocolo = toStrRequired(pick(data, 'protocolo', 'id', 'chamadoId', 'ocorrenciaId'), '0');
+    const ok = Number(data.status) === 1 || protocolo !== '0';
+    if (!ok) throw new ErpError(toStr(pick(data, 'msg', 'message')) ?? 'SGP: falha ao abrir chamado', 'INVALID', data);
+    return { id: protocolo };
   }
 
   async close(): Promise<void> {
-    // sem recursos persistentes
+    this.contractsCache.clear();
   }
 }
 

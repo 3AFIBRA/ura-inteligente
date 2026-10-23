@@ -5,6 +5,8 @@ import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../common/decorators.js';
 import { TenantContext } from '../prisma/tenant-context.js';
 import { encryptSecrets, decryptSecrets } from '@ura/shared/crypto';
+import { createErpConnector } from '@ura/erp';
+import { createWhatsappProvider } from '@ura/whatsapp';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
@@ -63,6 +65,28 @@ export class ErpConnectionsController {
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) { await this.prisma.erpConnection.findFirstOrThrow({ where: { id, tenantId: tenant() }, select: { id: true } }); await this.prisma.erpConnection.delete({ where: { id, tenantId: tenant() } }); return { ok: true }; }
+
+  /** Testa a conexao com o ERP (usa conector real, igual ao engine). */
+  @Post(':id/test')
+  async test(@Param('id') id: string) {
+    const row = await this.prisma.erpConnection.findFirstOrThrow({ where: { id, tenantId: tenant() } });
+    const secrets = decryptSecrets<Record<string, string | undefined>>(row.secretsEnc) ?? {};
+    const started = Date.now();
+    let ok = false;
+    let message: string;
+    try {
+      const connector = createErpConnector({ type: row.type as never, mode: row.mode as never, config: (row.config ?? {}) as Record<string, unknown>, secrets, timeoutMs: 20_000 });
+      const result = await connector.testConnection();
+      ok = result.ok;
+      message = result.message;
+      await connector.close().catch(() => undefined);
+    } catch (err) {
+      ok = false;
+      message = (err as Error).message;
+    }
+    await this.prisma.erpConnection.update({ where: { id: row.id }, data: { lastTestAt: new Date(), lastTestOk: ok, lastTestMsg: message } });
+    return { ok, message, latencyMs: Date.now() - started };
+  }
 }
 
 @Controller('whatsapp-connections')
@@ -97,6 +121,27 @@ export class WhatsappConnectionsController {
   @Delete(':id')
   @Roles('superadmin', 'tenant_admin')
   async remove(@Param('id') id: string) { await this.prisma.whatsappConnection.findFirstOrThrow({ where: { id, tenantId: tenant() }, select: { id: true } }); await this.prisma.whatsappConnection.delete({ where: { id, tenantId: tenant() } }); return { ok: true }; }
+
+  /** Testa a conexao com o provedor WhatsApp (usa adaptador real, igual ao engine). */
+  @Post(':id/test')
+  async test(@Param('id') id: string) {
+    const row = await this.prisma.whatsappConnection.findFirstOrThrow({ where: { id, tenantId: tenant() } });
+    const secrets = decryptSecrets<Record<string, string | undefined>>(row.secretsEnc) ?? {};
+    const started = Date.now();
+    let ok = false;
+    let message: string;
+    try {
+      const provider = createWhatsappProvider({ provider: row.provider as never, config: (row.config ?? {}) as Record<string, unknown>, secrets, timeoutMs: 20_000 });
+      const result = await provider.testConnection();
+      ok = result.ok;
+      message = result.message;
+    } catch (err) {
+      ok = false;
+      message = (err as Error).message;
+    }
+    await this.prisma.whatsappConnection.update({ where: { id: row.id }, data: { lastTestAt: new Date(), lastTestOk: ok, lastTestMsg: message } });
+    return { ok, message, latencyMs: Date.now() - started };
+  }
 }
 
 @Controller('speech-config')

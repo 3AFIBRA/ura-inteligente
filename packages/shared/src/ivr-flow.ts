@@ -300,10 +300,17 @@ export function collectTargets(node: FlowNode): string[] {
   return out;
 }
 
-/** Interpola {{var}} e {{obj.campo}} usando o contexto. */
+/** Interpola {{var}} e {{obj.campo}} usando o contexto. Suporta arrays: .first, .last, .length e índice numerico. */
 export function interpolate(template: string, vars: Record<string, unknown>): string {
   return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, path: string) => {
     const value = path.split('.').reduce<unknown>((acc, key) => {
+      if (Array.isArray(acc)) {
+        if (key === 'first') return acc[0];
+        if (key === 'last') return acc[acc.length - 1];
+        if (key === 'length') return acc.length;
+        if (/^\d+$/.test(key)) return acc[Number(key)];
+        return undefined;
+      }
       if (acc && typeof acc === 'object' && key in (acc as Record<string, unknown>)) {
         return (acc as Record<string, unknown>)[key];
       }

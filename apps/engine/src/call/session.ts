@@ -6,6 +6,8 @@ import * as fs from 'node:fs';
 import { env } from '../config/env.js';
 import { logger } from '../logger.js';
 import { ttsToMedia, transcribe, classifyIntent } from '../speech/tts.js';
+import { runErpAction, type ErpActionParams } from '../erp/service.js';
+import { sendWhatsapp, type WhatsappSendParams } from '../whatsapp/service.js';
 
 const prisma = new PrismaClient();
 
@@ -436,14 +438,52 @@ export class FlowExecutor {
       }
 
       case 'erp_action': {
-        logger.warn({ action: node.action }, 'Acao de ERP ainda nao integrada no engine; seguindo fluxo');
-        s.vars[node.output] = null;
-        return node.onError ?? node.onSuccess;
+        // interpola parametros ({{customer.id}} etc) antes de chamar o conector
+        const params: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(node.params)) params[k] = typeof v === 'string' ? interpolate(v, s.vars) : v;
+        await this.event('erp', node.id, { action: node.action, params: { ...params } });
+        try {
+          const result = await runErpAction(s.tenantId, node.action, params as ErpActionParams);
+          if (result === undefined) {
+            // sem conexao ERP configurada
+            logger.warn({ action: node.action }, 'Sem conexao ERP ativa para o tenant');
+            s.vars[node.output] = null;
+            return node.onError ?? node.onSuccess;
+          }
+          if (result === null) {
+            s.vars[node.output] = null;
+            return node.onNotFound ?? node.onError ?? null;
+          }
+          s.vars[node.output] = result;
+          await this.event('erp_result', node.id, { action: node.action, ok: true });
+          return node.onSuccess;
+        } catch (err) {
+          logger.warn({ err: String(err), action: node.action }, 'Erro em acao de ERP');
+          await this.event('erp_result', node.id, { action: node.action, ok: false, error: String(err) });
+          s.vars[node.output] = null;
+          return node.onError ?? node.onSuccess;
+        }
       }
 
       case 'whatsapp_send': {
-        logger.warn('Envio de WhatsApp ainda nao integrado no engine; seguindo fluxo');
-        return node.onError ?? node.onSuccess;
+        const to = interpolate(node.to, s.vars);
+        const message = node.message ? interpolate(node.message, s.vars) : undefined;
+        const doc = node.documentVar ? (resolveVar(s.vars, node.documentVar) as WhatsappSendParams['document']) : undefined;
+        await this.event('whatsapp', node.id, { to, hasDocument: !!(doc?.url || doc?.base64) });
+        try {
+          if (!to) throw new Error('Destinatario vazio');
+          const sent = await sendWhatsapp(s.tenantId, { to, message, document: doc });
+          if (!sent) {
+            logger.warn('Sem conexao WhatsApp ativa para o tenant');
+            return node.onError ?? node.onSuccess;
+          }
+          await this.event('whatsapp_result', node.id, { to, ok: true });
+          return node.onSuccess;
+        } catch (err) {
+          logger.warn({ err: String(err), to }, 'Erro no envio de WhatsApp');
+          await this.event('whatsapp_result', node.id, { to, ok: false, error: String(err) });
+          return node.onError ?? node.onSuccess;
+        }
       }
 
       case 'condition': {

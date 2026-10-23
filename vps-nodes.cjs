@@ -1,10 +1,11 @@
 const { Client } = require('ssh2');
+const fs = require('fs');
 const c = new Client();
 c.on('ready', () => {
   c.sftp((err, sftp) => {
     if (err) { console.error('SFTP ERR', err); c.end(); return; }
-    sftp.fastPut('/tmp/transcribe-many.js', '/tmp/transcribe-many.js', () => {
-      c.exec(`cd /opt/ura-inteligente && docker compose cp /tmp/transcribe-many.js engine:/app/transcribe-many.js && docker compose exec -T engine node /app/transcribe-many.js /var/spool/asterisk/recording/m-1792756338.4-1792756351707-zrdy.wav /var/spool/asterisk/recording/m-1792756845.5-1792756854393-ozyu.wav`, (e3, stream) => {
+    sftp.fastPut('/tmp/dumpflow.js', '/tmp/dumpflow.js', () => {
+      c.exec('cd /opt/ura-inteligente && docker compose cp /tmp/dumpflow.js engine:/app/dumpflow.js && docker compose exec -T engine node /app/dumpflow.js', (e3, stream) => {
         if (e3) { console.error('EXEC ERR', e3); c.end(); return; }
         stream.on('data', (d) => process.stdout.write(d));
         stream.stderr.on('data', (d) => process.stderr.write(d));
