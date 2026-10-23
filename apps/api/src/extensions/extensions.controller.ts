@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, BadRequestException, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, BadRequestException, ForbiddenException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../common/decorators.js';
 import { TenantContext } from '../prisma/tenant-context.js';
-import { AsteriskConfigService, encryptExtensionSecret } from '../asterisk/asterisk-config.service.js';
+import { AsteriskConfigService, decryptExtensionSecret, encryptExtensionSecret } from '../asterisk/asterisk-config.service.js';
+import { CurrentUser, type JwtPayload } from '../common/current-user.decorator.js';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
 import { randomBytes } from 'node:crypto';
@@ -130,12 +131,26 @@ export class ExtensionsController {
   }
 
   @Get(':id/credentials')
-  async credentials(@Param('id') id: string) {
+  async credentials(@Param('id') id: string, @CurrentUser() currentUser: JwtPayload) {
     const tenantId = this.tenantId();
-    const ext = await this.prisma.extension.findFirstOrThrow({ where: { id, tenantId }, include: { tenant: true } });
+    const [ext, account] = await Promise.all([
+      this.prisma.extension.findFirstOrThrow({ where: { id, tenantId }, include: { tenant: true } }),
+      this.prisma.user.findUnique({ where: { id: currentUser.sub }, select: { extensionId: true, role: true, tenantId: true } }),
+    ]);
+    const privileged = currentUser.role === 'superadmin' || currentUser.role === 'tenant_admin';
+    if (!account || (!privileged && account.extensionId !== id)) {
+      throw new ForbiddenException('Você só pode acessar as credenciais do ramal vinculado ao seu usuário');
+    }
+    if (!privileged && account.tenantId !== tenantId) {
+      throw new ForbiddenException('O ramal não pertence à empresa do usuário');
+    }
+    const secret = decryptExtensionSecret(ext.secret);
+    if (!secret) {
+      throw new BadRequestException('A senha do ramal precisa ser redefinida antes de conectar o webphone');
+    }
     return {
       username: `t${ext.tenant.slug}-${ext.number}`,
-      secret: '********',
+      secret,
       domain: env.appDomain,
       wssUrl: `wss://${env.appDomain}/ws`,
       sipPort: 5060,
