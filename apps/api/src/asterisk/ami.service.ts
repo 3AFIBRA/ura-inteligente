@@ -98,6 +98,10 @@ export class AmiService implements OnModuleDestroy {
     await this.action({ Action: 'Command', Command: 'dialplan reload' });
   }
 
+  async reloadQueues() {
+    await this.action({ Action: 'Command', Command: 'queue reload all' });
+  }
+
   /** Status dos registros de saída (troncos com autenticação register). Mapa objectName -> status. */
   async outboundRegistrations(): Promise<Map<string, string>> {
     const events = await this.actionWithEvents({ Action: 'PJSIPShowRegistrationsOutbound' });

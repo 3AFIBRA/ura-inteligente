@@ -1,7 +1,7 @@
 import type { Client as AriClient } from 'ari-client';
 import type { Channel, Playback } from 'ari-client';
 import { PrismaClient, Prisma } from '@prisma/client';
-import { ivrFlowDefinitionSchema, interpolate, type FlowNode, type IvrFlowDefinition, type Prompt } from '@ura/shared';
+import { ivrFlowDefinitionSchema, interpolate, queueAsteriskName, slugifyName, type FlowNode, type IvrFlowDefinition, type Prompt } from '@ura/shared';
 import * as fs from 'node:fs';
 import { env } from '../config/env.js';
 import { logger } from '../logger.js';
@@ -499,7 +499,7 @@ export class FlowExecutor {
         try {
           await s.client.channels.continueInDialplan({
             channelId: s.channelId,
-            context: `to-${s.tenantSlug}`,
+            context: `to-${slugifyName(s.tenantSlug)}`,
             extension: interpolate(node.destination, s.vars),
             priority: 1,
           });
@@ -514,7 +514,7 @@ export class FlowExecutor {
         await s.playPrompt(node.announcement);
         s.resumeNode = node.onTimeout ?? null;
         try {
-          await s.client.channels.setChannelVar({ channelId: s.channelId, variable: 'URA_QUEUE', value: node.queueName });
+          await s.client.channels.setChannelVar({ channelId: s.channelId, variable: 'URA_QUEUE', value: queueAsteriskName(s.tenantSlug, node.queueName) });
           await s.client.channels.setChannelVar({ channelId: s.channelId, variable: 'URA_TENANT', value: s.tenantId });
           await s.client.channels.setChannelVar({ channelId: s.channelId, variable: 'URA_TIMEOUT', value: String(node.maxWaitSec) });
           await s.client.channels.continueInDialplan({ channelId: s.channelId, context: 'sub-queue', extension: 's', priority: 1 });
@@ -712,28 +712,54 @@ export class FlowExecutor {
 
 /** Carrega o fluxo publicado do tenant (rota de entrada -> fluxo, ou primeiro publicado). */
 export async function loadFlowForDid(tenantId: string, did: string): Promise<{ flow: IvrFlowDefinition; flowId: string } | null> {
+  const dest = await resolveInbound(tenantId, did);
+  if (dest?.kind === 'ivr') return { flow: dest.flow, flowId: dest.flowId };
+  return null;
+}
+
+/** Destino de entrada resolvido a partir das rotas do tenant. */
+export type InboundDestination =
+  | { kind: 'ivr'; flow: IvrFlowDefinition; flowId: string }
+  | { kind: 'extension'; number: string }
+  | { kind: 'queue'; name: string };
+
+function didMatches(patternRaw: string, digits: string): boolean {
+  const pattern = patternRaw.trim();
+  if (!pattern || pattern === '_X.' || pattern === '_X' || pattern === 's') return true;
+  if (pattern.startsWith('_')) {
+    const regex = new RegExp(`^${pattern.slice(1).replace(/\./g, '.').replace(/X/g, '\\d').replace(/\+/g, '\\+')}$`);
+    return regex.test(digits);
+  }
+  return pattern.replace(/\D/g, '') === digits;
+}
+
+/** Resolve a rota de entrada do DID: fluxo de URA, ramal direto ou fila direta. */
+export async function resolveInbound(tenantId: string, did: string): Promise<InboundDestination | null> {
   const routes = await prisma.inboundRoute.findMany({
     where: { tenantId, active: true },
     include: { flow: true },
     orderBy: { priority: 'asc' },
   });
   const digits = did.replace(/\D/g, '');
-  const route = routes.find((r) => {
-    if (r.destinationType !== 'ivr' || !r.flow?.published) return false;
-    const pattern = r.did.trim();
-    if (!pattern || pattern === '_X.' || pattern === '_X' || pattern === 's') return true;
-    if (pattern.startsWith('_')) {
-      const regex = new RegExp(`^${pattern.slice(1).replace(/\./g, '.').replace(/X/g, '\\d').replace(/\+/g, '\\+')}$`);
-      return regex.test(digits);
+
+  for (const route of routes) {
+    if (!didMatches(route.did, digits)) continue;
+    if (route.destinationType === 'ivr' && route.flow?.published) {
+      return { kind: 'ivr', flow: ivrFlowDefinitionSchema.parse(route.flow.published), flowId: route.flow.id };
     }
-    return pattern.replace(/\D/g, '') === digits;
-  });
-  if (route?.flow?.published) {
-    return { flow: ivrFlowDefinitionSchema.parse(route.flow.published), flowId: route.flow.id };
+    if (route.destinationType === 'extension' && route.extensionNumber?.trim()) {
+      return { kind: 'extension', number: route.extensionNumber.trim() };
+    }
+    if (route.destinationType === 'queue' && route.queueName?.trim()) {
+      return { kind: 'queue', name: route.queueName.trim() };
+    }
+    // rota casou mas destino invalido/incompleto: continua para a proxima
   }
+
+  // Fallback: primeiro fluxo publicado do tenant
   const fallback = await prisma.ivrFlow.findFirst({ where: { tenantId, active: true, published: { not: Prisma.DbNull } } });
   if (fallback?.published) {
-    return { flow: ivrFlowDefinitionSchema.parse(fallback.published), flowId: fallback.id };
+    return { kind: 'ivr', flow: ivrFlowDefinitionSchema.parse(fallback.published), flowId: fallback.id };
   }
   return null;
 }

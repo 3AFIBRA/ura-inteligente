@@ -112,9 +112,14 @@ export const REDIS_CHANNEL_ASTERISK_RELOAD = 'ura:asterisk:reload';
 export function endpointName(tenantSlug: string, extension: string): string {
   return `t${tenantSlug}-${extension}`;
 }
-/** Nome da fila no Asterisk */
+/** Slug simples: minusculas sem caracteres nao alfanumericos. */
+export function slugifyName(value: string): string {
+  return (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Nome da fila no Asterisk (prefixada por tenant para isolamento) */
 export function queueAsteriskName(tenantSlug: string, queue: string): string {
-  return `t${tenantSlug}-${queue}`;
+  return `t${slugifyName(tenantSlug)}-${slugifyName(queue)}`;
 }
 /** Contexto do dialplan para chamadas internas de um tenant */
 export function tenantContext(tenantSlug: string): string {

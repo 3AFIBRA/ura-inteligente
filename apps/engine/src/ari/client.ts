@@ -4,7 +4,8 @@ import type { Channel } from 'ari-client';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 import { logger } from '../logger.js';
-import { CallSession, FlowExecutor, loadFlowForDid } from '../call/session.js';
+import { queueAsteriskName, slugifyName } from '@ura/shared';
+import { CallSession, FlowExecutor, resolveInbound, loadFlowForDid } from '../call/session.js';
 
 const prisma = new PrismaClient();
 const sessions = new Map<string, CallSession>();
@@ -16,9 +17,9 @@ async function handleInbound(client: AriClient, channel: Channel, tenantId: stri
     void channel.hangup().catch(() => undefined);
     return;
   }
-  const loaded = await loadFlowForDid(tenantId, did);
-  if (!loaded) {
-    logger.warn({ tenantId, did }, 'Nenhum fluxo publicado para o tenant; desligando');
+  const dest = await resolveInbound(tenantId, did);
+  if (!dest) {
+    logger.warn({ tenantId, did }, 'Nenhuma rota de entrada nem fluxo publicado para o tenant; desligando');
     try {
       await channel.answer();
       await channel.hangup();
@@ -32,9 +33,9 @@ async function handleInbound(client: AriClient, channel: Channel, tenantId: stri
       tenantId, channelId: channel.id, linkedId: channel.id,
       direction: 'inbound', status: 'ringing',
       callerId: channel.caller.number ?? '', callerName: channel.caller.name ?? undefined,
-      did, flowId: loaded.flowId,
+      did, flowId: dest.kind === 'ivr' ? dest.flowId : undefined,
     },
-    update: { status: 'answered', answeredAt: new Date(), did, flowId: loaded.flowId },
+    update: { status: 'answered', answeredAt: new Date(), did, flowId: dest.kind === 'ivr' ? dest.flowId : undefined },
   });
 
   // Gravacao da chamada completa (MixMonitor iniciado no dialplan sub-ura)
@@ -49,6 +50,35 @@ async function handleInbound(client: AriClient, channel: Channel, tenantId: stri
     }
   }
 
+  await channel.answer();
+  await prisma.call.update({ where: { id: call.id }, data: { status: 'answered', answeredAt: new Date() } }).catch(() => undefined);
+
+  // Destino da rota de entrada: ramal direto ou fila direta (sem passar pela URA)
+  if (dest.kind === 'extension') {
+    logger.info({ tenantId, did, ramal: dest.number }, 'Rota de entrada -> ramal direto');
+    try {
+      await client.channels.continueInDialplan({ channelId: channel.id, context: `to-${slugifyName(tenant.slug)}`, extension: dest.number, priority: 1 });
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'Falha ao transferir para ramal direto; desligando');
+      void channel.hangup().catch(() => undefined);
+    }
+    return;
+  }
+  if (dest.kind === 'queue') {
+    const queueName = queueAsteriskName(tenant.slug, dest.name);
+    logger.info({ tenantId, did, fila: queueName }, 'Rota de entrada -> fila direta');
+    try {
+      await client.channels.setChannelVar({ channelId: channel.id, variable: 'URA_QUEUE', value: queueName });
+      await client.channels.setChannelVar({ channelId: channel.id, variable: 'URA_TENANT', value: tenantId });
+      await client.channels.setChannelVar({ channelId: channel.id, variable: 'URA_TIMEOUT', value: '0' });
+      await client.channels.continueInDialplan({ channelId: channel.id, context: 'sub-queue', extension: 's', priority: 1 });
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'Falha ao entrar na fila direta; desligando');
+      void channel.hangup().catch(() => undefined);
+    }
+    return;
+  }
+
   const session = new CallSession(client, channel, tenantId, tenant.name, tenant.slug, did);
   session.vars = {
     ...((call.variables ?? {}) as Record<string, unknown>),
@@ -58,16 +88,13 @@ async function handleInbound(client: AriClient, channel: Channel, tenantId: stri
   session.callRowId = call.id;
   sessions.set(channel.id, session);
 
-  await channel.answer();
-  await prisma.call.update({ where: { id: call.id }, data: { status: 'answered', answeredAt: new Date() } }).catch(() => undefined);
-
-  const startNode = loaded.flow.nodes.find((n) => n.type === 'start');
+  const startNode = dest.flow.nodes.find((n) => n.type === 'start');
   if (!startNode) {
     logger.error('Fluxo sem no start');
     await channel.hangup().catch(() => undefined);
     return;
   }
-  const executor = new FlowExecutor(session, loaded.flow, prisma);
+  const executor = new FlowExecutor(session, dest.flow, prisma);
   executor.run(startNode.id).catch((err) => {
     logger.error({ err: String(err) }, 'Erro na execucao do fluxo');
   });

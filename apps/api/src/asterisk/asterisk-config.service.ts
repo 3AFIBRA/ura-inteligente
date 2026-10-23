@@ -2,11 +2,14 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { Tenant, Trunk, Extension } from '@prisma/client';
+import type { Tenant, Trunk, Extension, Queue, QueueMember } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AmiService } from './ami.service.js';
 import { env } from '../config/env.js';
 import { encryptSecrets, decryptSecrets } from '@ura/shared/crypto';
+import { queueAsteriskName } from '@ura/shared';
+
+type QueueWithMembers = Queue & { members: (QueueMember & { extension: Extension })[] };
 
 export type TrunkStatus = {
   id: string;
@@ -248,6 +251,10 @@ export class AsteriskConfigService implements OnModuleInit {
       join(dir, 'extensions-all.conf'),
       tenants.map((t) => `#include tenants/extensions-${t.id}.conf`).join('\n') + '\n',
     );
+    await writeFile(
+      join(dir, 'queues-all.conf'),
+      tenants.map((t) => `#include tenants/queues-${t.id}.conf`).join('\n') + '\n',
+    );
   }
 
   /** Gera (ou regenera) a configuração de um tenant e recarrega o Asterisk. */
@@ -255,14 +262,19 @@ export class AsteriskConfigService implements OnModuleInit {
     const tenant = await this.prisma.tenant.findUniqueOrThrow({ where: { id: tenantId } });
     const trunks = await this.prisma.trunk.findMany({ where: { tenantId } });
     const extensions = await this.prisma.extension.findMany({ where: { tenantId } });
+    const queues = await this.prisma.queue.findMany({
+      where: { tenantId },
+      include: { members: { include: { extension: true } } },
+    }) as QueueWithMembers[];
     await this.normalizeExtensionSecrets(extensions);
     const dir = env.asteriskConfigDir;
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, `pjsip-${tenantId}.conf`), this.renderPjsip(tenant, trunks, extensions));
     await writeFile(join(dir, `extensions-${tenantId}.conf`), this.renderDialplan(tenant, trunks, extensions));
+    await writeFile(join(dir, `queues-${tenantId}.conf`), this.renderQueues(tenant, queues));
     await this.refreshAggregates();
     if (opts.reload !== false) await this.reload();
-    this.logger.log(`Configuração do tenant ${tenant.slug} aplicada (${trunks.length} tronco(s), ${extensions.length} ramal(is))`);
+    this.logger.log(`Configuração do tenant ${tenant.slug} aplicada (${trunks.length} tronco(s), ${extensions.length} ramal(is), ${queues.length} fila(s))`);
   }
 
   async applyAll(): Promise<void> {
@@ -277,9 +289,46 @@ export class AsteriskConfigService implements OnModuleInit {
     try {
       await this.ami.reloadPjsip();
       await this.ami.reloadDialplan();
+      await this.ami.reloadQueues();
     } catch (err) {
       this.logger.warn(`Config gravada, mas o reload via AMI falhou: ${String(err)}`);
     }
+  }
+
+  /** Gera o queues.conf por tenant: filas com estrategia, musica e membros (ramais). */
+  private renderQueues(tenant: Tenant, queues: QueueWithMembers[]): string {
+    const slug = slugify(tenant.slug);
+    const blocks: string[] = [
+      `; Gerado automaticamente pela API — não edite manualmente.`,
+      `; Tenant: ${tenant.name} (${tenant.slug})`,
+    ];
+    for (const queue of queues.filter((q) => q.active)) {
+      const name = queueAsteriskName(tenant.slug, queue.name);
+      blocks.push(
+        ``,
+        `;; Fila: ${queue.name}`,
+        `[${name}](tpl-queue)`,
+        `strategy = ${queue.strategy}`,
+        `timeout = ${queue.timeoutSec}`,
+        `retry = ${queue.retrySec}`,
+        `wrapuptime = ${queue.wrapupSec}`,
+        `maxlen = ${queue.maxLen}`,
+        `musicclass = ${esc(queue.musicClass || 'default')}`,
+        `announce-frequency = ${queue.announceFrequency}`,
+        `announce-position = ${queue.announcePosition ? 'yes' : 'no'}`,
+        `announce-holdtime = ${queue.announceHoldtime ? 'yes' : 'no'}`,
+      );
+      const members = queue.members.filter((m) => m.extension?.active);
+      if (members.length === 0) {
+        blocks.push(`; Nenhum ramal membro — adicione ramais na fila pelo painel`);
+      }
+      for (const member of members) {
+        const iface = `Local/${extensionEndpointName(slug, member.extension)}@queue-agent`;
+        blocks.push(`member => ${iface},${member.penalty},${esc(member.extension.name)}`);
+      }
+    }
+    if (queues.length === 0) blocks.push(``, `; Nenhuma fila neste tenant.`);
+    return blocks.join('\n') + '\n';
   }
 
   // ============ Status dos troncos ============

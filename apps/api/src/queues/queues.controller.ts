@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { RolesGuard } from '../auth/roles.guard.js';
 import { Roles } from '../common/decorators.js';
 import { TenantContext } from '../prisma/tenant-context.js';
+import { AsteriskConfigService } from '../asterisk/asterisk-config.service.js';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../common/zod.pipe.js';
 
@@ -32,7 +33,19 @@ const memberSchema = z.object({
 @Controller('queues')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class QueuesController {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(QueuesController.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly asterisk: AsteriskConfigService,
+  ) {}
+
+  /** Regenera a config de filas do tenant (falhas nao bloqueiam a resposta). */
+  private applyConfig(tenantId: string) {
+    void this.asterisk.applyTenant(tenantId).catch((err) => {
+      this.logger.warn(`Falha ao aplicar configuração de filas: ${String(err)}`);
+    });
+  }
 
   @Get()
   async list() {
@@ -46,7 +59,9 @@ export class QueuesController {
   async create(@Body(new ZodValidationPipe(queueSchema)) dto: z.infer<typeof queueSchema>) {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Tenant obrigatorio');
-    return this.prisma.queue.create({ data: { ...dto, tenantId } });
+    const queue = await this.prisma.queue.create({ data: { ...dto, tenantId } });
+    this.applyConfig(tenantId);
+    return queue;
   }
 
   @Get(':id')
@@ -61,7 +76,9 @@ export class QueuesController {
   async patch(@Param('id') id: string, @Body(new ZodValidationPipe(queueSchema.partial())) dto: Partial<z.infer<typeof queueSchema>>) {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Selecione uma empresa');
-    return this.prisma.queue.update({ where: { id, tenantId }, data: dto });
+    const queue = await this.prisma.queue.update({ where: { id, tenantId }, data: dto });
+    this.applyConfig(tenantId);
+    return queue;
   }
 
   @Delete(':id')
@@ -70,6 +87,7 @@ export class QueuesController {
     const tenantId = TenantContext.tenantId();
     if (!tenantId) throw new BadRequestException('Selecione uma empresa');
     await this.prisma.queue.delete({ where: { id, tenantId } });
+    this.applyConfig(tenantId);
     return { ok: true };
   }
 
@@ -82,7 +100,9 @@ export class QueuesController {
       this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, select: { id: true } }),
       this.prisma.extension.findFirstOrThrow({ where: { id: dto.extensionId, tenantId }, select: { id: true } }),
     ]);
-    return this.prisma.queueMember.create({ data: { queueId: id, extensionId: dto.extensionId, penalty: dto.penalty } });
+    const member = await this.prisma.queueMember.create({ data: { queueId: id, extensionId: dto.extensionId, penalty: dto.penalty } });
+    this.applyConfig(tenantId);
+    return member;
   }
 
   @Delete(':id/members/:extensionId')
@@ -92,6 +112,7 @@ export class QueuesController {
     if (!tenantId) throw new BadRequestException('Selecione uma empresa');
     await this.prisma.queue.findFirstOrThrow({ where: { id, tenantId }, select: { id: true } });
     await this.prisma.queueMember.deleteMany({ where: { queueId: id, extensionId } });
+    this.applyConfig(tenantId);
     return { ok: true };
   }
 
