@@ -74,7 +74,7 @@ export class AmiService implements OnModuleDestroy {
       const handler = (evt: AmiEvent) => {
         if (evtStr(evt, 'actionid') && evtStr(evt, 'actionid') !== actionId) return;
         const name = evtStr(evt, 'event');
-        if (name === 'EventListComplete' || name === 'eventlistcomplete') {
+        if (name === 'EventListComplete' || /Complete$/.test(name)) {
           finish();
           return;
         }
