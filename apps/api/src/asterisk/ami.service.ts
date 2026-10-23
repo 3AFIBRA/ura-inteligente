@@ -46,7 +46,7 @@ export class AmiService implements OnModuleDestroy {
     const actionId = randomUUID();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`AMI sem resposta para ${String(payload.Action)}`)), timeoutMs);
-      manager.action({ ...payload, ActionID: actionId }, (err, res) => {
+      manager.action({ ...payload, actionid: actionId }, (err, res) => {
         clearTimeout(timer);
         if (err) reject(new Error(`Erro AMI em ${String(payload.Action)}`));
         else resolve(res as AmiEvent);
@@ -82,7 +82,7 @@ export class AmiService implements OnModuleDestroy {
       };
       const timer = setTimeout(finish, timeoutMs);
       this.eventListeners.add(handler);
-      manager.action({ ...payload, ActionID: actionId }, (err) => {
+      manager.action({ ...payload, actionid: actionId }, (err) => {
         if (err) finish();
       });
     });
