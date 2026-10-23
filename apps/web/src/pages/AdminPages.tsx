@@ -28,6 +28,25 @@ const configs: Record<string, Config> = {
 const display = (value: unknown) => typeof value === 'boolean' ? (value ? 'Sim' : 'Não') : value == null || value === '' ? '—' : String(value);
 const defaults = (fields: Field[]) => Object.fromEntries(fields.map((item) => [item.key, item.default ?? (item.kind === 'boolean' ? false : item.kind === 'number' ? 0 : '')]));
 
+type TrunkStatusItem = { id: string; name: string; status: string; registered: boolean; detail?: string };
+function trunkStatusLabel(st?: TrunkStatusItem): string {
+  if (!st) return 'Verificando...';
+  switch (st.status) {
+    case 'registered': return 'Registrado';
+    case 'unregistered': return 'Desconectado';
+    case 'rejected': return 'Rejeitado';
+    case 'unreachable': return 'Inacessível';
+    case 'inactive': return 'Inativo';
+    default: return 'Sem resposta';
+  }
+}
+function StatusLight({ registered, label, detail }: { registered: boolean; label: string; detail?: string }) {
+  return <span className="inline-flex items-center gap-2" title={detail}>
+    <span className={`h-2.5 w-2.5 rounded-full ${registered ? 'bg-emerald-500' : 'bg-red-500'}`} aria-hidden="true" />
+    <span className={registered ? 'font-medium text-emerald-700' : 'font-medium text-red-700'}>{label}</span>
+  </span>;
+}
+
 export function ResourcePage({ resource }: { resource: keyof typeof configs }) {
   const config = configs[resource];
   const { t } = useTranslation();
@@ -47,6 +66,8 @@ export function ResourcePage({ resource }: { resource: keyof typeof configs }) {
   const trunks = useTenantQuery(['resource', 'trunks'], () => get<Trunk[]>('/trunks'), { enabled: needsRoutes });
   const flows = useTenantQuery(['flows'], () => get<FlowListItem[]>('/flows'), { enabled: !!editing && resource === 'inbound' });
   const queues = useTenantQuery(['resource', 'queues'], () => get<Queue[]>('/queues'), { enabled: !!editing && resource === 'inbound' });
+  const isTrunks = resource === 'trunks';
+  const trunkStatuses = useTenantQuery(['trunk-statuses'], () => get<TrunkStatusItem[]>('/trunks/statuses'), { enabled: isTrunks, refetchInterval: 8000 });
   const referenceOptions: Record<string, { value: string; label: string }[]> = {
     extensionId: extensions.data?.map((item) => ({ value: item.id, label: `${item.number} · ${item.name}` })) ?? [],
     extensionNumber: extensions.data?.map((item) => ({ value: item.number, label: `${item.number} · ${item.name}` })) ?? [],
@@ -58,7 +79,7 @@ export function ResourcePage({ resource }: { resource: keyof typeof configs }) {
   const data = result.data;
   const rows = Array.isArray(data) ? data : data?.items ?? [];
   const canEdit = user?.role === 'superadmin' || user?.role === 'tenant_admin';
-  const refresh = async () => { if (config.tenantScoped) await invalidate(['resource', resource]); else { await queryClient.invalidateQueries({ queryKey: ['resource', resource] }); await queryClient.invalidateQueries({ queryKey: ['tenants'] }); } };
+  const refresh = async () => { if (config.tenantScoped) await invalidate(['resource', resource]); else { await queryClient.invalidateQueries({ queryKey: ['resource', resource] }); await queryClient.invalidateQueries({ queryKey: ['tenants'] }); } if (isTrunks) await invalidate(['trunk-statuses']); };
   const open = (item: RecordItem | 'new') => { setEditing(item); setValues(item === 'new' ? defaults(config.fields) : Object.fromEntries(config.fields.map((f) => [f.key, item[f.key] ?? f.default ?? (f.kind === 'boolean' ? false : '')]))); };
   const save = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true);
@@ -85,7 +106,7 @@ export function ResourcePage({ resource }: { resource: keyof typeof configs }) {
     {config.tenantScoped && !tenantId && user?.role === 'superadmin' ? <Card>Selecione uma empresa no topo para continuar.</Card> : <Card padded={false}>
       {result.isLoading && <p className="p-5 text-slate-500">Carregando...</p>}
       {result.error && <p role="alert" className="p-5 text-red-700">{getErrorMessage(result.error)}</p>}
-      {!result.isLoading && !result.error && (rows.length === 0 ? <p className="p-5 text-slate-500">Nenhum registro encontrado.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-slate-600"><tr>{config.summary.map((key) => <th className="px-4 py-3" key={key}>{config.fields.find((f) => f.key === key)?.label ?? key}</th>)}<th className="px-4 py-3">Ações</th></tr></thead><tbody>{rows.map((item) => <tr className="border-t border-slate-100" key={item.id}>{config.summary.map((key) => <td key={key} className="px-4 py-3">{display(item[key])}</td>)}<td className="flex gap-2 px-4 py-2"><Button size="sm" variant="outline" onClick={() => open(item)}>{canEdit ? t('app.edit') : 'Ver'}</Button>{resource === 'queues' && <Button size="sm" variant="outline" onClick={() => setQueueMembers(item)}>Ramais</Button>}{canEdit && <Button size="sm" variant="danger" onClick={() => void remove(item)}>{t('app.delete')}</Button>}</td></tr>)}</tbody></table></div>)}
+      {!result.isLoading && !result.error && (rows.length === 0 ? <p className="p-5 text-slate-500">Nenhum registro encontrado.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="bg-slate-50 text-slate-600"><tr>{config.summary.map((key) => <th className="px-4 py-3" key={key}>{config.fields.find((f) => f.key === key)?.label ?? key}</th>)}{isTrunks && <th className="px-4 py-3">Status</th>}<th className="px-4 py-3">Ações</th></tr></thead><tbody>{rows.map((item) => <tr className="border-t border-slate-100" key={item.id}>{config.summary.map((key) => <td key={key} className="px-4 py-3">{display(item[key])}</td>)}{isTrunks && (() => { const st = trunkStatuses.data?.find((s) => s.id === item.id); return <td className="px-4 py-3"><StatusLight registered={!!st?.registered} label={trunkStatusLabel(st)} detail={st?.detail} /></td>; })()}<td className="flex gap-2 px-4 py-2"><Button size="sm" variant="outline" onClick={() => open(item)}>{canEdit ? t('app.edit') : 'Ver'}</Button>{resource === 'queues' && <Button size="sm" variant="outline" onClick={() => setQueueMembers(item)}>Ramais</Button>}{canEdit && <Button size="sm" variant="danger" onClick={() => void remove(item)}>{t('app.delete')}</Button>}</td></tr>)}</tbody></table></div>)}
       {config.paginated && !result.isLoading && !result.error && !Array.isArray(data) && data && data.total > 0 && <div className="flex items-center justify-end gap-3 p-4 text-sm text-slate-600"><span>Página {page} de {Math.ceil(data.total / 20)} · {data.total} registros</span><Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage(page - 1)}>Anterior</Button><Button size="sm" variant="outline" disabled={page * 20 >= data.total} onClick={() => setPage(page + 1)}>Próxima</Button></div>}
     </Card>}
     {queueMembers && <QueueMembers queue={queueMembers as unknown as { id: string; name: string; members: { extensionId: string; extension: { number: string; name: string } }[] }} close={() => setQueueMembers(null)} />}

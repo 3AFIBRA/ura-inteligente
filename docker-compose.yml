@@ -88,9 +88,9 @@ services:
       redis:
         condition: service_healthy
     environment:
-      ASTERISK_HOST: 127.0.0.1
-      AMI_HOST: 127.0.0.1
-      ARI_URL: http://127.0.0.1:8088/ari
+      ASTERISK_HOST: asterisk
+      AMI_HOST: asterisk
+      ARI_URL: http://asterisk:8088/ari
     extra_hosts:
       - "asterisk:host-gateway"
     volumes:
@@ -112,6 +112,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      ARI_URL: http://asterisk:8088/ari
     extra_hosts:
       - "asterisk:host-gateway"
     volumes:

@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_FILTER } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { AsteriskModule } from './asterisk/asterisk.module.js';
 import { JwtAuthGuard } from './auth/jwt-auth.guard.js';
 import { RolesGuard } from './auth/roles.guard.js';
 import { GlobalExceptionFilter } from './common/exception.filter.js';
@@ -22,6 +23,7 @@ import { HealthController, AsteriskController } from './health/health.controller
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     AuthModule,
+    AsteriskModule,
   ],
   controllers: [
     TenantsController,
