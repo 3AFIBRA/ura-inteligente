@@ -50,7 +50,7 @@ export function Layout() {
   const { user, logout, selectedTenantId, setSelectedTenant } = useAuthStore();
   const { data: tenants } = useQuery({ queryKey: ['tenants'], queryFn: () => get<Tenant[]>('/tenants'), enabled: user?.role === 'superadmin' });
   useRealtimeSync();
-  const { connect, togglePanel, registration, selectedExtensionId } = useSoftphoneStore();
+  const { connect, togglePanel, registration, panelOpen, selectedExtensionId } = useSoftphoneStore();
 
   useEffect(() => {
     const canRestoreSelectedExtension = Boolean(
@@ -58,6 +58,15 @@ export function Layout() {
     );
     if (user?.extension?.type === 'webrtc' || canRestoreSelectedExtension) void connect();
   }, [user, connect, selectedExtensionId, selectedTenantId]);
+
+  const toggleSoftphone = () => {
+    const opening = !panelOpen;
+    togglePanel();
+    if (!opening || selectedExtensionId || user?.extension?.type === 'webrtc') return;
+    if (user?.role !== 'superadmin' && user?.role !== 'tenant_admin') return;
+    if (user.role === 'superadmin' && !selectedTenantId) return;
+    void connect();
+  };
 
   const doLogout = () => {
     logout();
@@ -100,7 +109,7 @@ export function Layout() {
           </div>
           <div className="mb-3 hidden items-center gap-2 sm:flex">
             <button
-              onClick={() => togglePanel()}
+              onClick={toggleSoftphone}
               className={`flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-xs ${
                 registration === 'registered' ? 'bg-green-900/50 text-green-400' : 'bg-white/10 text-white/80'
               }`}

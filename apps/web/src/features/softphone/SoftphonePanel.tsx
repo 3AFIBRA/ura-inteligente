@@ -92,7 +92,7 @@ export function SoftphonePanel() {
       <p className="mb-2 text-xs text-slate-600">
         {s.registration === 'registered' ? 'Conectado ao servidor VoIP' : s.registration === 'registering' ? 'Conectando ao servidor VoIP…' : 'Desconectado'}
       </p>
-      {s.registrationError === 'select_extension' && (
+      {s.extensionOptions.length > 0 && (
         <label className="mb-3 block text-xs font-medium text-slate-700">
           Selecione o ramal WebRTC
           <select
