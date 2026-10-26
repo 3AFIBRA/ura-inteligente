@@ -50,11 +50,14 @@ export function Layout() {
   const { user, logout, selectedTenantId, setSelectedTenant } = useAuthStore();
   const { data: tenants } = useQuery({ queryKey: ['tenants'], queryFn: () => get<Tenant[]>('/tenants'), enabled: user?.role === 'superadmin' });
   useRealtimeSync();
-  const { connect, togglePanel, registration } = useSoftphoneStore();
+  const { connect, togglePanel, registration, selectedExtensionId } = useSoftphoneStore();
 
   useEffect(() => {
-    if (user?.extension?.type === 'webrtc') connect();
-  }, [user, connect]);
+    const canRestoreSelectedExtension = Boolean(
+      selectedExtensionId && (user?.role === 'superadmin' || user?.role === 'tenant_admin'),
+    );
+    if (user?.extension?.type === 'webrtc' || canRestoreSelectedExtension) void connect();
+  }, [user, connect, selectedExtensionId, selectedTenantId]);
 
   const doLogout = () => {
     logout();

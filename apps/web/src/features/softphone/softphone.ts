@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import JsSIP from 'jssip';
 import type { RTCSession } from 'jssip/lib/RTCSession';
 import type { IncomingRTCSessionEvent, UA } from 'jssip/lib/UA';
-import { get } from '../../lib/api';
-import type { ExtensionCredentials } from '../../types/api';
+import { get, getErrorMessage } from '../../lib/api';
+import type { Extension, ExtensionCredentials } from '../../types/api';
 import { useAuthStore } from '../../store/auth';
 import { startRingtone, stopRingtone } from './ringtone';
 
@@ -25,6 +25,8 @@ interface SoftphoneState {
   registrationError?: string;
   credentials: ExtensionCredentials | null;
   extensionType: 'sip' | 'webrtc' | null;
+  extensionOptions: Extension[];
+  selectedExtensionId: string;
   callState: CallState;
   remoteNumber: string;
   muted: boolean;
@@ -37,6 +39,7 @@ interface SoftphoneState {
   setDialInput: (v: string) => void;
   /** Carrega credenciais do ramal do usuario e registra. */
   connect: () => Promise<void>;
+  selectExtension: (id: string) => void;
   disconnect: () => void;
   call: (target: string) => void;
   answer: () => void;
@@ -50,6 +53,32 @@ interface SoftphoneState {
 let ua: UA | null = null;
 let session: RTCSession | null = null;
 let remoteAudio: HTMLAudioElement | null = null;
+
+function selectedExtensionStorageKey(): string | null {
+  const userId = useAuthStore.getState().user?.id;
+  return userId ? `ura.softphone.extension.${userId}` : null;
+}
+
+function loadSelectedExtensionId(): string {
+  const key = selectedExtensionStorageKey();
+  if (!key || typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function saveSelectedExtensionId(id: string): void {
+  const key = selectedExtensionStorageKey();
+  if (!key || typeof window === 'undefined') return;
+  try {
+    if (id) window.localStorage.setItem(key, id);
+    else window.localStorage.removeItem(key);
+  } catch {
+    return;
+  }
+}
 
 function ensureAudio(): HTMLAudioElement {
   if (!remoteAudio) {
@@ -148,6 +177,8 @@ export const useSoftphoneStore = create<SoftphoneState>()((set, getState) => {
     registration: 'unregistered',
     credentials: null,
     extensionType: null,
+    extensionOptions: [],
+    selectedExtensionId: loadSelectedExtensionId(),
     callState: 'idle',
     remoteNumber: '',
     muted: false,
@@ -157,10 +188,29 @@ export const useSoftphoneStore = create<SoftphoneState>()((set, getState) => {
 
     togglePanel: (open) => set((s) => ({ panelOpen: open ?? !s.panelOpen })),
     setDialInput: (v) => set({ dialInput: v }),
+    selectExtension: (id) => {
+      saveSelectedExtensionId(id);
+      set({ selectedExtensionId: id, registrationError: undefined });
+    },
 
     connect: async () => {
       const user = useAuthStore.getState().user;
-      const ext = user?.extension;
+      let ext = user?.extension;
+      if ((!ext || ext.type !== 'webrtc') && (user?.role === 'superadmin' || user?.role === 'tenant_admin')) {
+        try {
+          const extensionOptions = (await get<Extension[]>('/extensions')).filter((option) => option.type === 'webrtc' && option.active);
+          const selectedExtensionId = getState().selectedExtensionId || loadSelectedExtensionId();
+          ext = extensionOptions.find((option) => option.id === selectedExtensionId);
+          set({ extensionOptions, selectedExtensionId });
+          if (!ext) {
+            set({ registration: 'error', registrationError: extensionOptions.length ? 'select_extension' : 'no_webrtc_extensions' });
+            return;
+          }
+        } catch (err) {
+          set({ registration: 'error', registrationError: getErrorMessage(err) });
+          return;
+        }
+      }
       if (!ext) {
         set({ registration: 'error', registrationError: 'no_extension', extensionType: null });
         return;
@@ -173,8 +223,8 @@ export const useSoftphoneStore = create<SoftphoneState>()((set, getState) => {
       set({ registration: 'registering', registrationError: undefined });
       try {
         const creds = await get<ExtensionCredentials>(`/extensions/${ext.id}/credentials`);
-        set({ credentials: creds });
         getState().disconnect();
+        set({ credentials: creds, registration: 'registering', registrationError: undefined });
         const socket = new JsSIP.WebSocketInterface(creds.wssUrl);
         ua = new JsSIP.UA({
           sockets: [socket],
@@ -205,7 +255,7 @@ export const useSoftphoneStore = create<SoftphoneState>()((set, getState) => {
         });
         ua.start();
       } catch (err) {
-        set({ registration: 'error', registrationError: err instanceof Error ? err.message : String(err) });
+        set({ registration: 'error', registrationError: getErrorMessage(err) });
       }
     },
 
